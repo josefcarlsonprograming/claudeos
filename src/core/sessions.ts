@@ -121,6 +121,11 @@ function envNoTmux(): NodeJS.ProcessEnv {
   const e: NodeJS.ProcessEnv = { ...process.env };
   delete e.TMUX;
   delete e.TMUX_PANE;
+  // node-pty resolves bare commands (`tmux`) against THIS PATH; macOS GUI/launchd processes get a
+  // minimal PATH without Homebrew, so the attach spawn fails. Prepend the usual locations.
+  const home = os.homedir();
+  const extra = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", `${home}/.local/bin`, `${home}/bin`, "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+  e.PATH = [...extra, ...String(e.PATH || "").split(":")].filter((p, i, a) => p && a.indexOf(p) === i).join(":");
   return e;
 }
 

@@ -783,7 +783,7 @@ async function attachTerminal(ws: any, sessionId: number, cols: number, rows: nu
   if (dspec) {
     let term: pty.IPty;
     try { term = pty.spawn(dspec.cmd, dspec.args, { name: "xterm-256color", cols, rows, cwd: dspec.cwd, env: dspec.env as any }); }
-    catch (e: any) { try { ws.send(`\r\n\x1b[31mfailed to start claude --resume: ${String(e?.message || e)}\x1b[0m\r\n`); ws.close(); } catch {} return; }
+    catch (e: any) { try { console.error(`[term] direct-spawn FAILED sess#${sessionId} cmd=${dspec.cmd} cwd=${dspec.cwd} err=${String(e?.message || e)}`); } catch {} try { ws.send(`\r\n\x1b[31mfailed to start claude --resume: ${String(e?.message || e)}\x1b[0m\r\n`); ws.close(); } catch {} return; }
     const reg: DirectPty = { term, ws, buffer: "", modes: new TermModeTracker() };
     directPtys.set(sessionId, reg);
     // DEFENSIVE: if `claude --resume` REFUSES (bg-agent / already-running) it exits fast with a

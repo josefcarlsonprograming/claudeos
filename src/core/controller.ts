@@ -1253,6 +1253,21 @@ export class Controller {
     try { if (!require("fs").existsSync(cwd)) return null; } catch { return null; }
     const env = { ...process.env } as NodeJS.ProcessEnv;
     delete env.TMUX; delete env.TMUX_PANE; // so `tmux` attaches on the DEFAULT socket + loads ~/.tmux.conf
+    // node-pty's posix_spawnp resolves the command against THIS env's PATH (not a login shell), and
+    // macOS GUI/launchd processes get a minimal PATH without Homebrew — so bare `tmux`/`claude` fail
+    // with "posix_spawnp failed". Prepend the usual bin dirs and resolve to absolute paths so the
+    // spawn (and the inner `claude` the tmux shell runs) always find the binaries. Harmless on Linux.
+    {
+      const home = require("os").homedir();
+      const extra = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", `${home}/.local/bin`, `${home}/bin`, "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+      env.PATH = [...extra, ...String(env.PATH || "").split(":")].filter((p, i, a) => p && a.indexOf(p) === i).join(":");
+    }
+    const resolveBin = (name: string): string => {
+      try { return require("child_process").execFileSync("/usr/bin/env", ["sh", "-c", `command -v ${name}`], { env, encoding: "utf8" }).trim() || name; }
+      catch { return name; }
+    };
+    const claudeBin = resolveBin("claude");
+    const tmuxBin = resolveBin("tmux");
     // FIX FF: wrap the resume in a fresh per-session tmux so the operator's tmux commands work
     // (Ctrl+B - / | splits, etc.) and the terminal PERSISTS. `-A` = attach-or-create (reopening
     // re-attaches the SAME session). No `-f` override → the operator's own ~/.tmux.conf bindings
@@ -1264,17 +1279,17 @@ export class Controller {
     // reopening re-attaches to it. EXCEPTION: if claude dies in <5s it's almost always a bg-agent
     // resume refusal — let the pane exit fast so attachTerminal()'s onExit fallback can route to the
     // agents view (existing behaviour) instead of trapping the operator in a shell.
-    const resume = `claude --resume ${sid} --dangerously-skip-permissions`;
+    const resume = `${claudeBin} --resume ${sid} --dangerously-skip-permissions`;
     const inner =
       '__t0=$(date +%s); ' + resume + '; __rc=$?; __t1=$(date +%s); ' +
       'if [ $((__t1 - __t0)) -lt 5 ]; then exit $__rc; fi; ' +
       'printf "\\n[Claude session ended — terminal kept alive. Resume with: ' + resume + ']\\n"; ' +
       'exec "${SHELL:-bash}" -i';
-    let haveTmux = false; try { require("child_process").execSync("command -v tmux", { stdio: "ignore" }); haveTmux = true; } catch {}
+    const haveTmux = tmuxBin !== "tmux"; // resolveBin returns an absolute path when found, else the bare name
     if (haveTmux) {
-      return { cmd: "tmux", args: ["new-session", "-A", "-s", `claudeos-${sessionId}`, "-c", cwd, inner], cwd, env };
+      return { cmd: tmuxBin, args: ["new-session", "-A", "-s", `claudeos-${sessionId}`, "-c", cwd, inner], cwd, env };
     }
-    return { cmd: "claude", args: ["--resume", sid, "--dangerously-skip-permissions"], cwd, env };
+    return { cmd: claudeBin, args: ["--resume", sid, "--dangerously-skip-permissions"], cwd, env };
   }
 
   /** PR-TERMINAL: why the last PR-card terminal attach couldn't be materialized (no local clone,

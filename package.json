@@ -1,11 +1,11 @@
 {
   "name": "claudeos",
   "version": "0.1.0",
-  "description": "ClaudeOS \u2014 a single-operator control surface for running ~20 independent Claude Code sessions in isolated git worktrees. SCAN->TRIAGE->RANK->DECIDE->LEARN pipeline. (Internal identifiers/paths keep the legacy 'cockpit' name; only branding is ClaudeOS.)",
+  "description": "ClaudeOS — a single-operator control surface for running ~20 independent Claude Code sessions in isolated git worktrees. SCAN->TRIAGE->RANK->DECIDE->LEARN pipeline. (Internal identifiers/paths keep the legacy 'cockpit' name; only branding is ClaudeOS.)",
   "main": "dist/main/main.js",
   "type": "commonjs",
   "scripts": {
-    "postinstall": "git config core.hooksPath scripts/git-hooks 2>/dev/null || true",
+    "postinstall": "git config core.hooksPath scripts/git-hooks 2>/dev/null || true; chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true",
     "hooks:install": "git config core.hooksPath scripts/git-hooks && echo 'git hooks active (pre-commit build + pre-push tests)'",
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.js",
     "start": "npm run build && electron --no-sandbox dist/main/main.js",
@@ -31,7 +31,7 @@
   "devDependencies": {
     "@types/node": "^22.19.20",
     "@types/ws": "^8.18.1",
-    "electron": "^42.0.0",
+    "electron": "^42.5.0",
     "playwright": "^1.60.0",
     "typescript": "^5.9.3"
   },
