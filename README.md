@@ -40,6 +40,35 @@ You tried cloud agents. They're fine for fire-and-forget, but when the work is *
 exploratory** — the kind where you stay in the loop and make the calls — they don't give you the one
 thing you need: **a ranked, transparent, always-honest answer to "what needs me right now?"**
 
+## See it in action
+
+<div align="center">
+
+![ClaudeOS walkthrough](docs/media/claudeos-demo.gif)
+
+<sub>A walk through the **demo** (everything fake — `npm run demo:serve`, nothing real is touched): the ranked queue, a drafted answer with options, the split diff, and the transparent learning panel. · <a href="docs/media/claudeos-demo.mp4">▶ higher-quality MP4</a></sub>
+
+</div>
+
+<table>
+<tr>
+<td width="50%"><img src="docs/media/screenshot-queue.png" alt="Ranked queue"></td>
+<td width="50%"><img src="docs/media/screenshot-answer.png" alt="Drafted answer"></td>
+</tr>
+<tr>
+<td><b>The ranked queue</b> — only the sessions that need you, each scored transparently.</td>
+<td><b>A drafted answer</b> — the question distilled to a line, with a suggested reply + options.</td>
+</tr>
+<tr>
+<td><img src="docs/media/screenshot-diff.png" alt="Split diff"></td>
+<td><img src="docs/media/screenshot-learning.png" alt="Learning panel"></td>
+</tr>
+<tr>
+<td><b>GitHub-style split diff</b> — review a session's change inline, then merge.</td>
+<td><b>It learns</b> — transparent weights, learned ranking rules, nightly "dreams".</td>
+</tr>
+</table>
+
 ## The core trick: Claude is genuinely bad at telling you when it needs you
 
 Here's the dirty secret of running agents at scale: a Claude Code session is **terrible at
