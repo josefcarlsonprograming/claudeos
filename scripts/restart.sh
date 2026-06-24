@@ -66,8 +66,10 @@ if [ "$have_systemd" = 1 ]; then
     node dist/server/server.js >/dev/null 2>&1
   fi
 else
-  COCKPIT_PORT="${REAL_PORT}" setsid nohup node dist/server/server.js >"${LOG_DIR}/real.log" 2>&1 &
-  COCKPIT_DEMO=1 COCKPIT_PORT="${DEMO_PORT}" setsid nohup node dist/server/server.js >"${LOG_DIR}/demo.log" 2>&1 &
+  # macOS has no `setsid`; `nohup … &` already detaches from the controlling terminal there.
+  SETSID="$(command -v setsid || true)"
+  COCKPIT_PORT="${REAL_PORT}" $SETSID nohup node dist/server/server.js >"${LOG_DIR}/real.log" 2>&1 &
+  COCKPIT_DEMO=1 COCKPIT_PORT="${DEMO_PORT}" $SETSID nohup node dist/server/server.js >"${LOG_DIR}/demo.log" 2>&1 &
 fi
 
 rc_real=000

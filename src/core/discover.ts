@@ -221,35 +221,74 @@ async function listClaudePanes(): Promise<LivePane[]> {
   return panes;
 }
 
-/** Parent pid of `pid` from /proc/<pid>/stat (4th field; comm may contain spaces/parens, so
- *  parse after the LAST ')'). Returns 0 if unknown. */
-function ppidOf(pid: number): number {
+// macOS has no /proc. Build a pid→ppid snapshot once via `ps` and cache it briefly so a single
+// discovery tick (which walks many parent chains) shares one cheap spawn instead of N.
+let _ppidMapDarwin: { at: number; map: Map<number, number> } | null = null;
+function ppidMapDarwin(): Map<number, number> {
+  if (_ppidMapDarwin && Date.now() - _ppidMapDarwin.at < 3000) return _ppidMapDarwin.map;
+  const map = new Map<number, number>();
   try {
-    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-    const after = stat.slice(stat.lastIndexOf(")") + 2); // skip "<state> "
-    const parts = after.split(" ");
-    return parseInt(parts[1], 10) || 0; // state, ppid, ...
-  } catch { return 0; }
+    const out = execFileSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 8000 });
+    for (const line of out.split("\n")) {
+      const m = line.trim().match(/^(\d+)\s+(\d+)$/);
+      if (m) map.set(parseInt(m[1], 10), parseInt(m[2], 10));
+    }
+  } catch { /* ps missing/errored → empty map; chain walk just stops early */ }
+  _ppidMapDarwin = { at: Date.now(), map };
+  return map;
+}
+
+/** Parent pid of `pid`. Linux: /proc/<pid>/stat (4th field; comm may contain spaces/parens, so
+ *  parse after the LAST ')'). macOS/other: a cached `ps -axo pid=,ppid=` snapshot. Returns 0 if unknown. */
+function ppidOf(pid: number): number {
+  if (process.platform === "linux") {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      const after = stat.slice(stat.lastIndexOf(")") + 2); // skip "<state> "
+      const parts = after.split(" ");
+      return parseInt(parts[1], 10) || 0; // state, ppid, ...
+    } catch { return 0; }
+  }
+  return ppidMapDarwin().get(pid) || 0;
 }
 
 /** Scan ALL processes for an open transcript (.jsonl under ~/.claude/projects), returning
  *  pid → transcript path. Claude Code keeps its session transcript open, so this reliably
  *  enumerates every live claude session regardless of tmux pane churn. */
+const TRANSCRIPT_FD_RE = /\/\.claude\/projects\/[^/]+\/[^/]+\.jsonl$/;
 function scanOpenTranscripts(): Map<number, string> {
   const map = new Map<number, string>();
-  let pids: string[];
-  try { pids = fs.readdirSync("/proc"); } catch { return map; }
-  for (const ent of pids) {
-    if (!/^\d+$/.test(ent)) continue;
-    const pid = parseInt(ent, 10);
-    let fds: string[];
-    try { fds = fs.readdirSync(`/proc/${pid}/fd`); } catch { continue; }
-    for (const fd of fds) {
-      let link: string;
-      try { link = fs.readlinkSync(`/proc/${pid}/fd/${fd}`); } catch { continue; }
-      if (/\/\.claude\/projects\/[^/]+\/[^/]+\.jsonl$/.test(link)) { map.set(pid, link); break; }
+  if (process.platform === "linux") {
+    let pids: string[];
+    try { pids = fs.readdirSync("/proc"); } catch { return map; }
+    for (const ent of pids) {
+      if (!/^\d+$/.test(ent)) continue;
+      const pid = parseInt(ent, 10);
+      let fds: string[];
+      try { fds = fs.readdirSync(`/proc/${pid}/fd`); } catch { continue; }
+      for (const fd of fds) {
+        let link: string;
+        try { link = fs.readlinkSync(`/proc/${pid}/fd/${fd}`); } catch { continue; }
+        if (TRANSCRIPT_FD_RE.test(link)) { map.set(pid, link); break; }
+      }
     }
+    return map;
   }
+  // macOS/other: no /proc. Ask lsof for files held open by `claude` processes, in field mode
+  // (`-F pn` → alternating `p<pid>` / `n<path>` lines). NOTE: some Claude builds append-and-close
+  // the transcript rather than holding it open, so this fallback may be empty — the PRIMARY
+  // mapping is `claude agents --json` (paneBySession). This just mirrors the Linux fd fallback.
+  try {
+    const out = execFileSync("lsof", ["-nP", "-w", "-c", "claude", "-F", "pn"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 8000 });
+    let pid = 0;
+    for (const line of out.split("\n")) {
+      if (line[0] === "p") pid = parseInt(line.slice(1), 10) || 0;
+      else if (line[0] === "n" && pid) {
+        const name = line.slice(1);
+        if (TRANSCRIPT_FD_RE.test(name) && !map.has(pid)) map.set(pid, name);
+      }
+    }
+  } catch { /* lsof missing/errored → empty; claude-agents mapping still applies */ }
   return map;
 }
 
