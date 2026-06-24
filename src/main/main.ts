@@ -20,6 +20,13 @@ app.commandLine.appendSwitch("no-sandbox");
 let win: BrowserWindow | null = null;
 let lastSurfaced = new Set<number>(); // item ids already announced
 
+// DESKTOP (macOS) MODE: when COCKPIT_UI_URL is set, the window loads the local web UI from the
+// running server instead of the file:// renderer. On macOS the file:// renderer can't open the
+// terminal WebSocket (empty location.host) and the in-app ssh/emulator terminal path is Linux-only,
+// so we point Electron at http://localhost:4317 — the exact UI we verified works — and let the
+// server be the single brain (no in-app engine/IPC). Unset → original behaviour, unchanged.
+const UI_URL = process.env.COCKPIT_UI_URL || "";
+
 function buildStack() {
   const db = openDb();
   const cfg = loadConfig();
@@ -117,7 +124,8 @@ function createWindow() {
     height: 800,
     title: "ClaudeOS",
     backgroundColor: "#0b0d12",
-    webPreferences: { preload: path.join(__dirname, "preload.js") },
+    // URL mode talks to the server over HTTP/WS (no preload bridge); file:// mode uses IPC.
+    webPreferences: UI_URL ? {} : { preload: path.join(__dirname, "preload.js") },
   });
   win.webContents.on("console-message", (_e, _lvl, msg) => console.log("[renderer]", msg));
   win.webContents.on("preload-error", (_e, p, err) => console.error("[preload-error]", p, err));
@@ -125,14 +133,14 @@ function createWindow() {
   // (context-aware: terminal font vs UI text scale). Pin the page zoom.
   try { win.webContents.setVisualZoomLevelLimits(1, 1); } catch {}
   try { win.webContents.on("did-finish-load", () => { try { win!.webContents.setZoomFactor(1); } catch {} }); } catch {}
-  win.loadFile(path.join(__dirname, "../renderer/index.html"));
+  if (UI_URL) win.loadURL(UI_URL);
+  else win.loadFile(path.join(__dirname, "../renderer/index.html"));
 }
 
 app.whenReady().then(() => {
-  registerIpc();
+  if (!UI_URL) registerIpc();          // URL/desktop mode: the server is the brain — no in-app engine
   createWindow();
-  tickAndNotify();
-  setInterval(tickAndNotify, 5000);
+  if (!UI_URL) { tickAndNotify(); setInterval(tickAndNotify, 5000); }
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
