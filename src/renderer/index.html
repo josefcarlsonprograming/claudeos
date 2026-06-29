@@ -20,11 +20,17 @@
       <div class="focus-bar">
         <span class="focus-label">focus:</span>
         <span id="focus-val" class="focus-val">(none)</span>
-        <span class="hint">press <kbd>Ctrl+G</kbd> <kbd>f</kbd> to set</span>
+        <span class="hint">press <kbd>⌘F</kbd> to set</span>
       </div>
       <div id="counts" class="counts"></div>
       <div id="review-stats" class="review-stats"></div>
+      <button id="pin-btn" class="detail-btn" title="Pin / unpin the selected task — pinned tasks stay at the top of the queue (⌘P)">📌 Pin</button>
+      <button id="archive-btn" class="detail-btn" title="Archive the selected task — marks it complete / done and removes it from the queue (⌘E)">✓ Archive</button>
       <button id="open-detail-btn" class="detail-btn" title="Open (or refocus) the detached Diff/HTML window — drag it to your other screen">⧉ detail</button>
+      <div id="account-pick" class="account-pick" title="Which Claude account ClaudeOS uses for triage / summary calls (~/.claude.json). Snapshots come from `node dist/cli.js account add <label>`. Manual only — no auto-rotate.">
+        <button id="account-pick-btn" class="account-pick-btn" type="button"><span class="account-pick-dot">◐</span><span id="account-pick-label">account: …</span><span class="account-pick-caret">▾</span></button>
+        <ul id="account-pick-menu" class="account-pick-menu" hidden></ul>
+      </div>
       <div class="help-hint">press <kbd>?</kbd> for keys</div>
     </header>
 

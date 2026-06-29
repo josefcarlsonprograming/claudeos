@@ -25,7 +25,19 @@ let lastSurfaced = new Set<number>(); // item ids already announced
 // terminal WebSocket (empty location.host) and the in-app ssh/emulator terminal path is Linux-only,
 // so we point Electron at http://localhost:4317 — the exact UI we verified works — and let the
 // server be the single brain (no in-app engine/IPC). Unset → original behaviour, unchanged.
-const UI_URL = process.env.COCKPIT_UI_URL || "";
+// macOS DEFAULTS TO URL MODE. The file:// renderer can't open the terminal WebSocket there —
+// location.host is empty, so the URL becomes `ws:///api/term` and every attach fails with code 1006
+// ("couldn't connect to the terminal"). Pointing the window at the local server gives the renderer a
+// real http origin, so the WS resolves to ws://localhost:<port>/api/term and terminals work. The
+// server is then the single brain (the in-app engine/IPC below stays off in URL mode). Override with
+// COCKPIT_UI_URL; set it to "file" to force the legacy file:// renderer. Linux keeps file:// default.
+const UI_URL = (() => {
+  const env = process.env.COCKPIT_UI_URL || "";
+  if (env === "file") return "";                       // explicit opt-out → legacy file:// renderer
+  if (env) return env;                                  // explicit URL override
+  if (process.platform === "darwin") return `http://localhost:${process.env.COCKPIT_PORT || "4317"}`;
+  return "";                                            // Linux/other: unchanged (file:// + in-app engine)
+})();
 
 function buildStack() {
   const db = openDb();

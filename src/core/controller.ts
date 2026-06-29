@@ -740,8 +740,13 @@ export class Controller {
       .all() as { id: number }[];
     let reopened = 0;
     for (const s of sessions) {
+      // 2026-06-29: widened from `status='decided' AND decision='done'` to any non-pending item.
+      // The idle-reaper marks items as superseded (not decision='done'), and after we cleared
+      // completed_at on auto-reaped sessions the older filter missed them, so the queue stayed
+      // empty even though the session was live + ready. Wider match brings every live ready
+      // session back as a card.
       const it = this.db
-        .prepare("SELECT id FROM items WHERE session_id=? AND status='decided' AND decision='done' ORDER BY updated_at DESC, id DESC LIMIT 1")
+        .prepare("SELECT id FROM items WHERE session_id=? AND status!='pending' ORDER BY updated_at DESC, id DESC LIMIT 1")
         .get(s.id) as { id: number } | undefined;
       if (!it) continue;
       this.db
@@ -1281,6 +1286,10 @@ export class Controller {
     // agents view (existing behaviour) instead of trapping the operator in a shell.
     const resume = `${claudeBin} --resume ${sid} --dangerously-skip-permissions`;
     const inner =
+      // SCROLL: tmux defaults to `mouse off`, so the xterm wheel does nothing and the operator
+      // can't scroll the terminal. Enable it for this server (global, idempotent) the moment the
+      // session starts → wheel → tmux copy-mode scrollback works. Harmless if already on.
+      'tmux set -g mouse on 2>/dev/null; ' +
       '__t0=$(date +%s); ' + resume + '; __rc=$?; __t1=$(date +%s); ' +
       'if [ $((__t1 - __t0)) -lt 5 ]; then exit $__rc; fi; ' +
       'printf "\\n[Claude session ended — terminal kept alive. Resume with: ' + resume + ']\\n"; ' +
@@ -1409,7 +1418,12 @@ export class Controller {
     // command + cwd are byte-identical to what the WS path would have spawned.
     try {
       const args = [spec.args[0], spec.args[1], "-d", ...spec.args.slice(2)]; // new-session -A -d -s <name> -c <cwd> <inner>
-      require("child_process").execFileSync("tmux", args, { env: spec.env, stdio: "ignore" });
+      // Use spec.cmd (the ABSOLUTE tmux path directResumeSpec already resolved), NOT a bare "tmux":
+      // the Electron app is launched from the macOS GUI/launchd with a minimal PATH that omits
+      // Homebrew, so a bare "tmux" here fails to resolve → the durable claudeos-<id> is never
+      // pre-created → the ssh `tmux attach` lands on a missing session → "[detached]". The absolute
+      // path matches exactly what the server-side WS path spawns.
+      require("child_process").execFileSync(spec.cmd, args, { env: spec.env, stdio: "ignore" });
     } catch { /* if create races/fails, a plain attach below may still succeed if it already exists */ }
     return { ok: true, host, remote: `tmux attach -t ${sessionName}`, sessionName };
   }
@@ -1596,33 +1610,76 @@ export class Controller {
     return this.processHoldsTranscript(sessionId);
   }
 
-  /** Does any LIVE process currently hold this session's transcript fd open? (cc-daemon or an
-   *  interactive `claude --resume`.) This is process-based truth — independent of mtime. */
+  /** Does any LIVE process currently run this session in a way that makes a direct `--resume`
+   *  re-spawn UNSAFE (a real second claude on the same transcript)? This is process-based truth —
+   *  independent of mtime. Platform-split because the underlying signal differs:
+   *   • Linux: a live `claude` holds its transcript fd open → scan /proc for a NON-daemon fd holder.
+   *   • macOS: Claude appends-and-CLOSES the transcript (never holds the fd — verified with lsof),
+   *     so the fd signal is unavailable. Use argv instead: a `claude --resume <cid>` process means
+   *     this exact session is live. EXCEPTION: our OWN per-task `claudeos-<id>` tmux also runs
+   *     `claude --resume <cid>`, but reopening it is SAFE (directResumeSpec's `tmux new-session -A`
+   *     just re-attaches, no second claude) — so if that managed tmux exists, report NOT live and
+   *     let the fast direct path re-attach it. */
   private processHoldsTranscript(sessionId: number): boolean {
     const s = this.getSession(sessionId) as any;
     const tp = s && (s.transcript_path as string | null);
     if (!tp) return false;
-    try {
-      const fs = require("fs");
-      for (const ent of fs.readdirSync("/proc")) {
-        if (!/^\d+$/.test(ent)) continue;
-        let fds: string[]; try { fds = fs.readdirSync(`/proc/${ent}/fd`); } catch { continue; }
-        for (const fd of fds) {
-          let link: string; try { link = fs.readlinkSync(`/proc/${ent}/fd/${fd}`); } catch { continue; }
-          // FIX Q: the cc-DAEMON supervisor (`claude daemon run`) keeps transcript fds OPEN for
-          // sessions it ONCE managed — long after they stop being active agents. That is NOT a
-          // live session; counting it makes idle sessions wrongly route to the agents-view
-          // fallback. Only an ACTUAL session process (interactive / `claude --resume <id>`)
-          // holding the fd means "live". So skip the daemon holder.
-          if (link === tp && !Controller.isCcDaemon(ent)) return true;
+    if (process.platform === "linux") {
+      try {
+        const fs = require("fs");
+        for (const ent of fs.readdirSync("/proc")) {
+          if (!/^\d+$/.test(ent)) continue;
+          let fds: string[]; try { fds = fs.readdirSync(`/proc/${ent}/fd`); } catch { continue; }
+          for (const fd of fds) {
+            let link: string; try { link = fs.readlinkSync(`/proc/${ent}/fd/${fd}`); } catch { continue; }
+            // FIX Q: the cc-DAEMON supervisor (`claude daemon run`) keeps transcript fds OPEN for
+            // sessions it ONCE managed — long after they stop being active agents. That is NOT a
+            // live session; counting it makes idle sessions wrongly route to the agents-view
+            // fallback. Only an ACTUAL session process (interactive / `claude --resume <id>`)
+            // holding the fd means "live". So skip the daemon holder.
+            if (link === tp && !Controller.isCcDaemon(ent)) return true;
+          }
         }
-      }
-    } catch {}
+      } catch {}
+      return false;
+    }
+    // macOS / other: argv-based (see method doc). Our managed `claudeos-<id>` tmux → safe to direct.
+    const cid = (s.claude_session_id as string | null) || null;
+    if (!cid) return false;
+    const cp = require("child_process");
+    const env = this.spawnProbeEnv();
+    try { cp.execFileSync("tmux", ["has-session", "-t", `claudeos-${sessionId}`], { stdio: "ignore", env, timeout: 5000 }); return false; } catch {}
+    try {
+      const ps = cp.execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 8000 });
+      return Controller.matchesResumeProc(ps, cid);
+    } catch { return false; }
+  }
+
+  /** A minimal env for liveness probes (tmux/ps): default tmux socket + the bin dirs a macOS
+   *  GUI/launchd process is missing (Homebrew, ~/.local). Mirrors directResumeSpec/envNoTmux. */
+  private spawnProbeEnv(): NodeJS.ProcessEnv {
+    const env = { ...process.env } as NodeJS.ProcessEnv;
+    delete env.TMUX; delete env.TMUX_PANE; // probe the DEFAULT socket, not whatever spawned us
+    const home = require("os").homedir();
+    const extra = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", `${home}/.local/bin`, `${home}/bin`, "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+    env.PATH = [...extra, ...String(env.PATH || "").split(":")].filter((p, i, a) => p && a.indexOf(p) === i).join(":");
+    return env;
+  }
+
+  /** Pure + testable: do any of these `ps`-style "pid command" lines run `claude --resume <cid>`?
+   *  The cc-daemon (`claude daemon run`) lacks `--resume <cid>`, so it's excluded automatically. */
+  static matchesResumeProc(psOutput: string, cid: string): boolean {
+    if (!cid) return false;
+    const needle = `--resume ${cid}`;
+    for (const line of psOutput.split("\n")) {
+      if (line.includes(needle) && /(^|\/|\s)claude(\s|$)/.test(line)) return true;
+    }
     return false;
   }
 
   /** FIX Q: is this pid the cc-daemon supervisor (`claude daemon run`)? Its cmdline contains
-   *  "daemon" + "run" (NUL-separated argv). It supervises agents but is NOT a session process. */
+   *  "daemon" + "run" (NUL-separated argv). It supervises agents but is NOT a session process.
+   *  Linux-only (reads /proc); the macOS argv path excludes the daemon implicitly (no `--resume`). */
   private static isCcDaemon(pid: string): boolean {
     try {
       const fs = require("fs");

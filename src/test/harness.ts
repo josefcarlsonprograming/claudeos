@@ -2308,6 +2308,19 @@ async function main() {
     check("FIX P: surface RE-OPENS a dismissed item to pending on fresh transcript activity", fs.readFileSync(path.resolve(__dirname, "../../src/core/engine.ts"), "utf8").includes("decision=NULL, dismissed_at=NULL") && /mtime > dismissAt/.test(fs.readFileSync(path.resolve(__dirname, "../../src/core/engine.ts"), "utf8")));
     // FIX Q: the cc-daemon holding a transcript fd must NOT count as "live" (false positive).
     check("FIX Q: fd-holder liveness EXCLUDES the cc-daemon (`claude daemon run`)", ctrljs.includes("isCcDaemon") && /!Controller\.isCcDaemon\(ent\)/.test(ctrljs) && ctrljs.includes('"daemon run"'));
+    // macOS liveness: Claude appends-and-closes its transcript (no fd to scan), so processHoldsTranscript
+    // splits on platform and uses an argv signal (`claude --resume <cid>`) on macOS. matchesResumeProc
+    // is the pure, testable core of that signal.
+    check("mac-liveness: processHoldsTranscript splits on platform (no /proc on macOS)", /process\.platform === "linux"/.test(ctrljs) && ctrljs.includes("matchesResumeProc"));
+    check("mac-liveness: matchesResumeProc detects a live `claude --resume <cid>` process",
+      Controller.matchesResumeProc("4823 /opt/homebrew/bin/claude --resume abc-123 --dangerously-skip-permissions", "abc-123") === true);
+    check("mac-liveness: matchesResumeProc ignores a DIFFERENT session's resume",
+      Controller.matchesResumeProc("4823 claude --resume other-999 --dangerously-skip-permissions", "abc-123") === false);
+    check("mac-liveness: matchesResumeProc excludes the cc-daemon (`claude daemon run`, no --resume)",
+      Controller.matchesResumeProc("311 /opt/homebrew/bin/claude daemon run\n312 node server.js", "abc-123") === false);
+    check("mac-liveness: matchesResumeProc doesn't match a bare `--resume abc-123` from a non-claude proc",
+      Controller.matchesResumeProc("99 /usr/bin/somethingelse --resume abc-123", "abc-123") === false);
+    check("mac-liveness: matchesResumeProc is false for empty cid", Controller.matchesResumeProc("1 claude --resume abc-123", "") === false);
     // Provisional guard: opening a terminal marks the session so it's never lost.
     check("guard: attachTerminal marks the session opened (provisional keep)", srvjs.includes("markSessionOpened") && ctrljs.includes("markSessionOpened"));
     // FIX R: terminal paste via the browser paste EVENT (insecure-context safe), Ctrl+V passthrough.

@@ -53,7 +53,12 @@
   "_kanban_repo_comment": "Repo whose kanban cards/worktrees ClaudeOS manages, and the default repo for new sessions. Set to YOUR repo path, e.g. \"/home/you/code/your-repo\". Leave \"\" if you only ever pass an explicit repo path to `cli.js launch`.",
   "kanban_repo": "",
   "_sessions_repos_comment": "Repos offered in the \u2190 (new session) launcher. Defaults to [kanban_repo] if set. Add your own, e.g. [\"/home/you/code/your-repo\"].",
-  "sessions_repos": [],
+  "sessions_repos": [
+    "/Users/Josef/CRM",
+    "/Users/Josef/batsonic",
+    "/Users/Josef/biosonic-server",
+    "/Users/Josef/claudeos"
+  ],
   "_polls_comment": "tick_interval_ms = main engine pipeline cadence (server); terminal_poll_ms = live-terminal capture refresh (renderer).",
   "tick_interval_ms": 5000,
   "terminal_poll_ms": 200,
@@ -67,7 +72,7 @@
   "_reap_completed_tmux_comment": "Nightly (~03:00) the orphan tmux of any session COMPLETED via Ctrl+G e more than this many hours ago is killed, so dozens of done tasks don't leave dozens of idle terminals/Claude processes running. Only completed (Ctrl+G e) sessions are touched \u2014 never dismissed/snoozed/active ones \u2014 and the git worktree + db row are kept (undo still works within the window). Set 0 to disable.",
   "reap_completed_tmux_hours": 5,
   "_auto_complete_idle_comment": "Nightly (~03:00) any claude session whose transcript hasn't changed for this many hours is AUTO-COMPLETED: archived out of the sessions panel, its pending queue items superseded, and both its terminals reaped \u2014 teammate workers, one-shot background jobs and abandoned sessions that nobody ever Ctrl+G e's (also covers dead sessions: they stop writing). Pinned sessions, the session being viewed, shells, and sessions with a still-future ETA are never touched, and NO kanban card is moved (an idle-dead session does not mean its task is done). Set 0 to disable.",
-  "auto_complete_idle_hours": 20,
+  "auto_complete_idle_hours": 0,
   "_auto_diff_comment": "PR and REVIEW_DIFF tasks default to the full GitHub-style split diff inline (right pane) on first focus \u2014 no need to press d. Set false to disable.",
   "auto_diff_on_pr_review": true,
   "_auto_html_comment": "When the task you're viewing has an HTML visualization (one a session wrote, or in the /visualize folder), auto-surface it in the LEFT pane (Pane A) on first focus and whenever a NEW html appears \u2014 no need to press h. Never steals keyboard focus from the terminal. Set false to disable.",
@@ -102,5 +107,5 @@
     "message": "continue"
   },
   "dismiss_reopen_grace_min": 15,
-  "teammate_idle_reap_hours": 3
+  "teammate_idle_reap_hours": 0
 }

@@ -27,6 +27,7 @@ import { Controller } from "../core/controller";
 import { dream, runDream } from "../core/dream";
 import { isDemo, seedDemo, resetDemoDbFiles } from "../core/demo";
 import { TermModeTracker } from "../core/termmodes";
+import { listAccounts as listClaudeAccounts, switchTo as switchClaudeAccount } from "../core/accounts";
 
 const PORT = parseInt(process.env.COCKPIT_PORT || "4317", 10);
 const HOST = process.env.COCKPIT_HOST || "0.0.0.0";
@@ -283,6 +284,15 @@ const server = http.createServer(async (req, res) => {
     // ---- API ----
     if (p === "/api/state") return send(res, 200, ctrl.state());
     if (p === "/api/diag" && req.method === "GET") return send(res, 200, { recent: _diagLog }); // FIX T: read recent term diagnostics
+    if (p === "/api/accounts" && req.method === "GET") {
+      // Manual account picker (see src/core/accounts.ts). Returns snapshots + which is active.
+      // Kept OFF the broadcast state — accounts rarely change, no need to push every tick.
+      const { accounts, activeLabel } = listClaudeAccounts();
+      return send(res, 200, {
+        active: activeLabel || null,
+        accounts: accounts.map((a) => ({ label: a.label, sizeBytes: a.size, capturedAt: new Date(a.mtimeMs).toISOString() })),
+      });
+    }
     if (p.startsWith("/api/sessionPr/")) {
       // FIX X: lazily detect (gh) + return a session's open PR; cached 60s. Called when the diff opens.
       const sid = numId(p.slice("/api/sessionPr/".length));
@@ -379,6 +389,18 @@ const server = http.createServer(async (req, res) => {
         await tickLoop();
         return send(res, 200, { ok: true });
       }
+      if (p === "/api/account/switch") {
+        // Manual account picker: swap ~/.claude.json to the named snapshot.
+        // The next `claude -p` subprocess picks up the swapped credentials; running ones finish under their old auth.
+        const label = typeof body.label === "string" ? body.label.trim() : "";
+        if (!label) return send(res, 400, { error: "missing label" });
+        try {
+          const prev = switchClaudeAccount(label);
+          return send(res, 200, { ok: true, prev: prev || null, active: label });
+        } catch (e: any) {
+          return send(res, 400, { ok: false, error: String(e?.message || e) });
+        }
+      }
       if (p === "/api/undo") {
         const r = ctrl.undo();
         await tickLoop();
@@ -424,9 +446,17 @@ const server = http.createServer(async (req, res) => {
         // action (normally a task already in the queue keeps its priority). Heavy: one model call per
         // task, fire-and-forget, so scores refresh over the next few ticks. broadcast() pushes the
         // immediate re-sort (focus keyword-match / staleness / flags) right away.
-        const r = await engine.reprioritizeAll();
-        broadcast();
-        return send(res, 200, r);
+        // 2026-06-29: any unhandled throw from engine.reprioritizeAll() (e.g. a missing transcript
+        // file deep in detect()) used to surface in the UI as the unhelpful "re-prioritize failed"
+        // toast with no detail. Catch + surface the message so the operator can diagnose.
+        try {
+          const r = await engine.reprioritizeAll();
+          broadcast();
+          return send(res, 200, r);
+        } catch (e: any) {
+          console.error("[reprioritize] failed:", e?.stack || e);
+          return send(res, 500, { ok: false, error: String(e?.message || e) });
+        }
       }
       if (p === "/api/reasonFeedback") {
         // FIX BB: strong reasoned priority feedback (direction down|up + reason text).

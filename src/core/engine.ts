@@ -229,7 +229,7 @@ export class Engine {
     // session / liveness change appears within ~15s, which is imperceptible for the roster.)
     if (this.opts.discover !== false && runHeavy) {
       try {
-        await discoverRecentSessions(this.db, this.sessions, this.opts.discoverLimit ?? 20);
+        await discoverRecentSessions(this.db, this.sessions, this.opts.discoverLimit ?? (Number(process.env.COCKPIT_DISCOVER_LIMIT) || 2000));
         // lazy clean titles + category tags (fire-and-forget; never blocks the tick)
         if (this.opts.enrich !== false) {
           const { generateSessionMetaAsync } = require("./discover");

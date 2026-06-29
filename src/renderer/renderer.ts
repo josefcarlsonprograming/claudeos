@@ -489,6 +489,9 @@ function reconcileSelection() {
 /** FIX DD: set ONLY by explicit user navigation (selectIndex) → consumed once by renderQueue to
  *  scrollIntoView the focused row. Background tick re-renders never set it, so they never scroll. */
 let _navScroll = false;
+// Overview rows ("Goal/Next/Recap/You asked") clamp long text to a few lines; clicking a row toggles
+// its full text. Keyed "itemId:field" so the expanded state survives background re-renders.
+const _ovExpanded = new Set<string>();
 
 /** FIX LL: set ONLY by explicit user navigation (selectIndex). Consumed once by renderPanes to
  *  permit resetting focus to the new task's default pane. Background ticks never set it, so a
@@ -551,7 +554,10 @@ function answerInputFocused(): boolean {
   return !!el && document.activeElement === el;
 }
 
-const LETTERS = ["a", "b", "c", "d"];
+// 2026-06-29: switched candidate-answer keys from A/B/C/D to 1/2/3/4 at operator request — A
+// in the empty answer box used to fire the option-pick AND start typing text starting with "A",
+// which felt like the input was eating his keys. Digits never collide with normal English prose.
+const LETTERS = ["1", "2", "3", "4"];
 const PIN_BASE = 100000; // mirror of priority.ts — pinned items get this base added
 /** Display priority: pinned items show 📌 + their REAL underlying score (not 100152). */
 function dispPriority(it: any): string {
@@ -568,11 +574,15 @@ function optionsFor(it: any): AnswerOption[] {
   } catch {}
   if (!Array.isArray(raw)) raw = [];
   const out: AnswerOption[] = [];
+  // 2026-06-29: ignore whatever .key the enrichment proposed (it usually says "A"/"B"/…). The
+  // visible key is ALWAYS the position-based digit (1/2/3/4) so the empty-box hotkey matches what
+  // the operator sees on the chip. This means a stale enrichment with letter keys still picks
+  // cleanly with 1/2/3/4 instead of leaving dead chips labelled "A" with no working hotkey.
   raw.forEach((o, i) => {
-    if (o && typeof o === "object" && o.text) out.push({ key: String(o.key || LETTERS[i]).toLowerCase(), label: o.label || String(o.key || LETTERS[i]).toUpperCase(), text: o.text });
-    else if (typeof o === "string" && o.trim()) out.push({ key: LETTERS[i], label: LETTERS[i].toUpperCase(), text: o.trim() });
+    if (o && typeof o === "object" && o.text) out.push({ key: LETTERS[i], label: LETTERS[i], text: o.text });
+    else if (typeof o === "string" && o.trim()) out.push({ key: LETTERS[i], label: LETTERS[i], text: o.trim() });
   });
-  if (!out.length && it.suggested_answer) out.push({ key: "a", label: "A", text: it.suggested_answer });
+  if (!out.length && it.suggested_answer) out.push({ key: "1", label: "1", text: it.suggested_answer });
   return out.slice(0, 4);
 }
 function optionKeys(it: any): string[] {
@@ -974,24 +984,28 @@ function renderOverviewInto(el: HTMLElement, it: any, P: "A" | "B") {
   //                  (cleaned + truncated, full text on hover). Omitted when we have nothing.
   const recapBlock = () => {
     const recap = (it.context && it.context.trim()) || it.one_liner || "";
+    // Each row CLAMPS to a few lines and is click-to-expand (a long prompt/recap no longer needs the
+    // transcript or a hover-tooltip to read in full). `valHtml` is already-escaped inner HTML.
+    const ovRow = (label: string, valHtml: string, field: string, extraCls = "") => {
+      const key = `${it.id}:${field}`;
+      const expanded = _ovExpanded.has(key);
+      const cls = `ov-val ${extraCls} ${expanded ? "ov-expanded" : "ov-clamp"}`.trim();
+      return `<div class="ov-row ov-expandable" data-ovkey="${esc(key)}" title="click to ${expanded ? "collapse" : "expand"}"><span class="ov-label">${label}</span><span class="${cls}">${valHtml}</span></div>`;
+    };
     // Goal/Next context (see enrich.ts CONTEXT_RULE) renders as two labeled rows; anything
     // else (older cached items, one_liner fallback) keeps the single Recap row.
     const gn = recap.match(/^Goal:\s*([\s\S]*?)\s*\bNext:\s*([\s\S]*)$/i);
     const recapRow = gn
-      ? `<div class="ov-row"><span class="ov-label">Goal</span><span class="ov-val">${enrichBadge}${esc(gn[1].trim())}</span></div>` +
-        `<div class="ov-row"><span class="ov-label">Next</span><span class="ov-val">${esc(gn[2].trim())}</span></div>`
+      ? ovRow("Goal", enrichBadge + esc(gn[1].trim()), "goal") + ovRow("Next", esc(gn[2].trim()), "next")
       : recap || enriching
-        ? `<div class="ov-row"><span class="ov-label">Recap</span><span class="ov-val">${enrichBadge}${esc(recap)}</span></div>`
+        ? ovRow("Recap", enrichBadge + esc(recap), "recap")
         : "";
     let askRow = "";
     if (it.prompt_summary && it.prompt_summary.trim()) {
-      askRow = `<div class="ov-row"><span class="ov-label">You asked</span><span class="ov-val ov-ask">${esc(it.prompt_summary.trim())}</span></div>`;
+      askRow = ovRow("You asked", esc(it.prompt_summary.trim()), "ask", "ov-ask");
     } else {
       const full = cleanPrompt(it.last_prompt || "");
-      if (full) {
-        const shown = full.length > 200 ? full.slice(0, 199) + "…" : full;
-        askRow = `<div class="ov-row"><span class="ov-label">You asked</span><span class="ov-val ov-ask" title="${esc(full)}">“${esc(shown)}”</span></div>`;
-      }
+      if (full) askRow = ovRow("You asked", `“${esc(full)}”`, "ask", "ov-ask");
     }
     return `<div class="ov">${recapRow}${askRow}</div>`;
   };
@@ -1489,6 +1503,7 @@ function showHelp() {
   const sel = selectedItem();
   const dynKeys = isAnswerable(sel) ? optionsFor(sel).map((o) => `<kbd>${esc(o.key.toUpperCase())}</kbd> ${esc(o.label)}`).join(" · ") : "";
   const synthetic =
+    `<tr><td class="k"><kbd>⌘E</kbd> <kbd>⌘P</kbd> <kbd>⌘F</kbd></td><td><b>Mac shortcuts</b> — work EVERYWHERE incl. the terminal: <kbd>⌘E</kbd> archive/complete · <kbd>⌘P</kbd> pin · <kbd>⌘F</kbd> set focus · <kbd>⌘↑</kbd>/<kbd>⌘↓</kbd> prev/next task. (Or click the <b>📌 Pin</b> / <b>✓ Archive</b> buttons in the header.)</td></tr>` +
     `<tr><td class="k">model</td><td><b>TERMINAL-FIRST</b>: landing on a task focuses its live terminal — whatever you type goes straight to the session. On a fresh landing <kbd>↑</kbd>/<kbd>↓</kbd> walk the queue; once you TYPE anything into the terminal they become real arrows to the session (prompt history) until you switch task. <kbd>Shift+↑/↓</kbd> = always the session, <kbd>${ml} ↑/↓</kbd> = always the queue. Every other cockpit action is behind the master (<kbd>${ml}</kbd>) — bare letters never trigger anything.</td></tr>` +
     `<tr><td class="k"><kbd>↑</kbd>/<kbd>↓</kbd></td><td>previous / next task — works everywhere, incl. inside the terminal. <kbd>Shift+↑</kbd>/<kbd>Shift+↓</kbd> sends a REAL arrow to the terminal (Claude menus, shell history).</td></tr>` +
     `<tr><td class="k">${dynKeys || "<kbd>Y</kbd>/<kbd>N</kbd> or <kbd>A</kbd>/<kbd>B</kbd>/<kbd>C</kbd>/<kbd>D</kbd>"}</td><td>pick + send a candidate answer — in the (empty) answer box (focus pane A first: <kbd>${ml}</kbd> <kbd>←</kbd> or <kbd>o</kbd>)</td></tr>` +
@@ -1591,6 +1606,22 @@ function clearMaster() {
   S.leaderActive = false;
   if (S.leaderTimer) { clearTimeout(S.leaderTimer); S.leaderTimer = null; }
   $("leader-hint").style.display = "none";
+}
+
+/** MAC ⌘ SHORTCUTS — direct, single-press actions on the selected task. Unlike Ctrl-based keys these
+ *  never collide with the terminal (⌘ isn't a terminal control char), so they work EVERYWHERE,
+ *  including while typing to Claude. Returns true if it handled the key (caller preventDefaults).
+ *  ⌘C/⌘V/⌘R/⌘Z/⌘Q etc. are deliberately NOT captured here so copy/paste/reload/undo/quit still work. */
+function runMacShortcut(e: KeyboardEvent): boolean {
+  if (!e.metaKey || e.ctrlKey || e.altKey) return false; // plain ⌘ only
+  switch (e.key.toLowerCase()) {
+    case "e": completeSelected(); return true;        // ⌘E  archive / complete
+    case "p": void togglePin(); return true;          // ⌘P  pin / unpin
+    case "f": showFocus(); return true;               // ⌘F  set focus
+    case "arrowup": moveQueueSel(-1); return true;    // ⌘↑  previous task
+    case "arrowdown": moveQueueSel(1); return true;   // ⌘↓  next task
+    default: return false;
+  }
 }
 /** Run a master command key. Always consumes the key (master sequence). */
 function runMasterCmd(e: KeyboardEvent): boolean {
@@ -1938,6 +1969,13 @@ async function openTermNative(sid: number, term: any) {
   scheduleTermRefit(); applyKeyboardTarget();
 }
 
+/** Terminal reconnect tuning. A live socket resets the counter (onopen). We do MAX_TERM_FAST_RECONNECTS
+ *  quick backoff tries to ride out a momentary blip, then drop to a calm fixed-interval retry that
+ *  self-heals when the session becomes reachable again — instead of either spamming "try N" forever
+ *  or giving up permanently. */
+const MAX_TERM_FAST_RECONNECTS = 6;
+const TERM_SLOW_RECONNECT_MS = 15000;
+
 /** Open (or RE-open) the PTY websocket for `sid` on an EXISTING xterm. Wires output/close/error
  *  (NOT input — that's bound once in attachTerminalSession). On an UNEXPECTED drop it auto-reconnects:
  *  the terminal is just a re-attachable VIEW of the durable `claudeos-<id>` tmux session, so a deploy,
@@ -1956,7 +1994,12 @@ function openTermWs(sid: number, term: any) {
     S.termWs = null;
   }
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/api/term?sessionId=${sid}&cols=${term.cols}&rows=${term.rows}`);
+  // GUARD: a file:// renderer has an EMPTY location.host → `ws:///api/term` (no host) which fails
+  // instantly with code 1006 and never recovers ("couldn't connect to the terminal"). The macOS app
+  // now loads from the server so this is populated; fall back to the canonical local server if it
+  // isn't, so the terminal can still attach instead of silently dead-looping.
+  const wsHost = location.host || "localhost:4317";
+  const ws = new WebSocket(`${proto}://${wsHost}/api/term?sessionId=${sid}&cols=${term.cols}&rows=${term.rows}`);
   ws.binaryType = "arraybuffer";
   S.termWs = ws;
   S.termIntentionalClose = false;
@@ -1981,13 +2024,42 @@ function scheduleTermReconnect(sid: number) {
   if (!S.term) return;                        // no xterm to reuse
   if (S.termReconnectTimer) return;           // already scheduled
   const n = (S.termReconnectAttempts = (S.termReconnectAttempts || 0) + 1);
-  const delay = Math.min(3000, Math.round(300 * Math.pow(1.7, n - 1)));
-  try { $("term-foot").textContent = `● reconnecting… (try ${n})`; } catch {}
+  // TWO-PHASE RECONNECT. A live socket resets the counter to 0 in onopen, so a counter that keeps
+  // climbing means the WS isn't staying up. The old code retried FOREVER with a 300ms→3s backoff,
+  // which spun "reconnecting… (try 161)" forever and pegged the CPU. But the opposite extreme —
+  // giving up permanently after N tries — is also wrong: a TRANSIENT outage (the server being
+  // redeployed, a VPN blip) would then leave the terminal dead until a manual reopen, even though
+  // it would have healed on its own seconds later. So: do a few FAST tries to ride out a blip, then
+  // fall back to a calm SLOW retry that self-heals whenever the server returns — without the spam.
+  if (n <= MAX_TERM_FAST_RECONNECTS) {
+    const delay = Math.min(3000, Math.round(300 * Math.pow(1.7, n - 1)));
+    try { $("term-foot").textContent = `● reconnecting… (try ${n}/${MAX_TERM_FAST_RECONNECTS})`; } catch {}
+    S.termReconnectTimer = window.setTimeout(() => {
+      S.termReconnectTimer = null;
+      if (S.termIntentionalClose || S.termSessionForPane !== sid || !S.term) return;
+      openTermWs(sid, S.term);
+    }, delay);
+    return;
+  }
+  // SLOW PHASE: keep trying every TERM_SLOW_RECONNECT_MS so the terminal heals itself once the
+  // session becomes attachable again (server back up, tmux server started, session resumable).
+  // Print the explanation ONCE (on the first slow tick) so we don't repaint it every retry.
+  if (n === MAX_TERM_FAST_RECONNECTS + 1) {
+    try {
+      S.term.write(
+        `\r\n\x1b[33m● terminal unavailable — couldn't attach after ${MAX_TERM_FAST_RECONNECTS} tries.\x1b[0m\r\n` +
+        `\x1b[2m  Likely cause: no tmux server is running, the session's worktree was moved/deleted,\r\n` +
+        `  or this session can't be resumed. Retrying in the background — it'll connect automatically\r\n` +
+        `  once it's reachable. Press ${masterLabel()} t to retry now.\x1b[0m\r\n`
+      );
+    } catch {}
+  }
+  try { $("term-foot").textContent = `⚠ terminal unavailable · auto-retrying… · ${masterLabel()} t to retry now`; } catch {}
   S.termReconnectTimer = window.setTimeout(() => {
     S.termReconnectTimer = null;
     if (S.termIntentionalClose || S.termSessionForPane !== sid || !S.term) return;
     openTermWs(sid, S.term);
-  }, delay);
+  }, TERM_SLOW_RECONNECT_MS);
 }
 
 function teardownTerminal() {
@@ -2377,6 +2449,9 @@ function makeXterm() {
     // the event propagates to the window handler → handleOverlayKey (Esc closes, Enter confirms).
     // Without this, Esc/Enter typed into the pty UNDER the overlay and it could never be closed.
     if (overlayOpen()) return false;
+    // MAC ⌘ SHORTCUTS work even while typing to Claude (⌘ ≠ terminal control char). Handle + swallow
+    // so xterm doesn't also send the keystroke to the pty. ⌘C/⌘V/etc. fall through (copy/paste).
+    if (runMacShortcut(e)) { e.preventDefault(); e.stopPropagation(); return false; }
     // The master key is owned HERE while the terminal is focused (single-dispatch:
     // stopPropagation so the global window handler never double-processes it).
     if (S.leaderActive) { e.preventDefault(); e.stopPropagation(); runMasterCmd(e); return false; }
@@ -3862,6 +3937,10 @@ window.addEventListener("keydown", async (e) => {
   // and (b) over a non-terminal pane, the master key (Ctrl+G) re-arms and yanks focus out of the box.
   if (overlayOpen()) { await handleOverlayKey(e); return; }
 
+  // MAC ⌘ SHORTCUTS — handled here when the terminal doesn't own the keys (the xterm custom handler
+  // catches them when it has focus). ⌘E archive · ⌘P pin · ⌘F focus · ⌘↑/⌘↓ prev/next task.
+  if (runMacShortcut(e)) { e.preventDefault(); return; }
+
   // SINGLE-DISPATCH master: when the xterm actually HOLDS DOM focus, its custom handler owns the
   // master (and stopPropagation()s it), so the global handler must NOT also process it here.
   // But "the focused PANE shows a terminal" does not guarantee the xterm has DOM focus — right
@@ -4189,6 +4268,23 @@ function initDetail(): void {
   if (_detailChan) _detailChan.onmessage = (e: MessageEvent) => { if ((e.data || {}).type === "hello") broadcastSel(); };
   const odb = document.getElementById("open-detail-btn");
   if (odb) odb.addEventListener("click", (e) => { e.preventDefault(); openDetailWindow(); });
+  // Clickable Pin / Archive — same actions as the master-key shortcuts (Ctrl+G p / Ctrl+G e), but
+  // discoverable and mouse-driven, so the operator never needs the leader chord. Both act on the
+  // currently selected task; Archive is undoable (Ctrl+G u / the undo button).
+  const pinBtn = document.getElementById("pin-btn");
+  if (pinBtn) pinBtn.addEventListener("click", (e) => { e.preventDefault(); void togglePin(); });
+  const archiveBtn = document.getElementById("archive-btn");
+  if (archiveBtn) archiveBtn.addEventListener("click", (e) => { e.preventDefault(); completeSelected(); });
+  // Click-to-expand the clamped overview rows (Goal/Next/Recap/You asked). Delegated so it survives
+  // every re-render; toggles the row's key in _ovExpanded and re-renders so the full text shows.
+  document.addEventListener("click", (e) => {
+    const row = (e.target as HTMLElement)?.closest?.(".ov-expandable") as HTMLElement | null;
+    if (!row) return;
+    const key = row.getAttribute("data-ovkey");
+    if (!key) return;
+    if (_ovExpanded.has(key)) _ovExpanded.delete(key); else _ovExpanded.add(key);
+    render();
+  });
   // ↻ re-prioritize: re-judge the WHOLE queue's importance against the current focus and re-rank
   // (overrides the Up-Next freeze for this one explicit action). Heavy — disable while it runs so a
   // double-click can't fire a second wave of model calls; scores then fill in over the next ticks.
@@ -4227,4 +4323,99 @@ function initDetail(): void {
   setTimeout(() => openDetailWindow(), 400);
   api.onUpdate(async () => { await refresh(); });
   setStatus(`ClaudeOS ready · press ? for keys · ${masterLabel()} then o/t/d · ; switches pane`);
+
+  // -------------------------------------------------------------------------
+  // Manual Claude-account picker (~/.claude.json swap).
+  // Server: GET /api/accounts, POST /api/account/switch. Manual only — no auto-rotate.
+  // -------------------------------------------------------------------------
+  (function wireAccountPicker() {
+    const root = document.getElementById("account-pick") as HTMLElement | null;
+    const btn = document.getElementById("account-pick-btn") as HTMLButtonElement | null;
+    const labelEl = document.getElementById("account-pick-label") as HTMLElement | null;
+    const menu = document.getElementById("account-pick-menu") as HTMLUListElement | null;
+    if (!root || !btn || !labelEl || !menu) return;
+
+    let cache: { active: string | null; accounts: Array<{ label: string; capturedAt: string }> } | null = null;
+
+    function fmtAge(iso: string): string {
+      const ms = Date.now() - new Date(iso).getTime();
+      const s = Math.floor(ms / 1000);
+      if (s < 60) return `${s}s ago`;
+      if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+      if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+      return `${Math.floor(s / 86400)}d ago`;
+    }
+
+    function renderHeader(): void {
+      if (!labelEl) return;
+      labelEl.textContent = cache?.active ? `account: ${cache.active}` : `account: (none)`;
+    }
+
+    function renderMenu(): void {
+      if (!menu) return;
+      menu.innerHTML = "";
+      const accounts = cache?.accounts ?? [];
+      if (!accounts.length) {
+        const li = document.createElement("li");
+        li.className = "empty";
+        li.textContent = "no snapshots — run `node dist/cli.js account add <label>`";
+        menu.appendChild(li);
+        return;
+      }
+      for (const a of accounts) {
+        const li = document.createElement("li");
+        if (a.label === cache?.active) li.classList.add("active");
+        const name = document.createElement("span");
+        name.textContent = a.label;
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        meta.textContent = fmtAge(a.capturedAt);
+        li.appendChild(name);
+        li.appendChild(meta);
+        li.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          if (a.label === cache?.active) { closeMenu(); return; }
+          li.style.opacity = "0.5";
+          try {
+            const r = await (api as any).accountSwitch(a.label);
+            if (r && r.ok) {
+              if (cache) cache.active = a.label;
+              renderHeader();
+              renderMenu();
+              setStatus(`account: switched to ${a.label}`);
+            } else {
+              setStatus(`account switch failed: ${(r && r.error) || "unknown"}`);
+            }
+          } catch (err: any) {
+            setStatus(`account switch failed: ${String(err?.message || err)}`);
+          } finally {
+            li.style.opacity = "";
+            closeMenu();
+          }
+        });
+        menu.appendChild(li);
+      }
+    }
+
+    function openMenu(): void { if (menu) { menu.hidden = false; renderMenu(); } }
+    function closeMenu(): void { if (menu) menu.hidden = true; }
+
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try { cache = await (api as any).accountsList(); } catch { /* keep stale cache */ }
+      renderHeader();
+      if (menu && menu.hidden) openMenu(); else closeMenu();
+    });
+    document.addEventListener("click", (e) => {
+      if (root && !root.contains(e.target as Node)) closeMenu();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && menu && !menu.hidden) closeMenu();
+    });
+
+    (async () => {
+      try { cache = await (api as any).accountsList(); renderHeader(); }
+      catch { /* old server without endpoint — leave placeholder */ }
+    })();
+  })();
 })();

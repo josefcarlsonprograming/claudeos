@@ -144,6 +144,8 @@
     kanbanAppend: (sessionId) => jpost("/api/kanbanAppend", { sessionId }),
     undo: () => jpost("/api/undo", {}),
     setFocus: (focus) => jpost("/api/focus", { focus }),
+    accountsList: () => jget("/api/accounts"),
+    accountSwitch: (label) => jpost("/api/account/switch", { label }),
     reloadConfig: () => Promise.resolve({ ok: true }),
     onUpdate: (cb) => {
       // ask for notification permission on first interaction
