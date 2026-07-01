@@ -85,24 +85,31 @@ export type GitRunner = (args: string[], cwd: string) => string;
 const defaultGit: GitRunner = (args, cwd) =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
+/** The repo root for a config-relative pathspec (<repo>/config → <repo>). */
+export function repoRoot(): string {
+  return path.dirname(configDir());
+}
+
 /**
- * Auto-commit (and push) RANKING.md after the dream evolves it, so the operator NEVER has to
- * push the nightly learning by hand. Scoped to ONLY config/RANKING.md via an explicit pathspec —
+ * Auto-commit (and push) a SCOPED set of files after a nightly loop evolves them, so the operator
+ * NEVER has to push the learning by hand. Staging is limited to the explicit `relPaths` pathspec —
  * it never stages or commits unrelated working-tree changes. Best-effort: a non-git dir (e.g. the
  * temp config dir used in tests), a red pre-push gate, or no network just returns a note; it never
  * throws into the dream. Push lands directly on the current branch (master) — this repo is
  * pre-authorized for direct master pushes of docs-like files (see CLAUDE.md).
+ *
+ * `relPaths` are repo-root-relative (e.g. "config/RANKING.md", "skills/answer-x.md").
  */
-export function commitAndPushRankingMd(opts?: { push?: boolean; git?: GitRunner }): {
-  committed: boolean;
-  pushed: boolean;
-  note: string;
-} {
+export function commitAndPush(
+  relPaths: string[],
+  message: string,
+  opts?: { push?: boolean; git?: GitRunner; root?: string }
+): { committed: boolean; pushed: boolean; note: string } {
   const git = opts?.git || defaultGit;
   const push = opts?.push !== false;
-  const file = rankingPath();
-  const root = path.dirname(path.dirname(file)); // <repo>/config/RANKING.md -> <repo>
-  const rel = path.relative(root, file) || "config/RANKING.md";
+  const root = opts?.root || repoRoot();
+  const rels = relPaths.map((p) => p.replace(/^\/+/, "")).filter(Boolean);
+  if (!rels.length) return { committed: false, pushed: false, note: "no paths — nothing to commit" };
   try {
     git(["rev-parse", "--is-inside-work-tree"], root);
   } catch {
@@ -110,22 +117,36 @@ export function commitAndPushRankingMd(opts?: { push?: boolean; git?: GitRunner 
   }
   let dirty = false;
   try {
-    dirty = git(["status", "--porcelain", "--", rel], root).trim().length > 0;
+    dirty = git(["status", "--porcelain", "--", ...rels], root).trim().length > 0;
   } catch {
     return { committed: false, pushed: false, note: "git status failed — skipped" };
   }
-  if (!dirty) return { committed: false, pushed: false, note: "RANKING.md unchanged — nothing to commit" };
+  if (!dirty) return { committed: false, pushed: false, note: "unchanged — nothing to commit" };
   try {
-    git(["add", "--", rel], root);
-    git(["commit", "-m", "dream: evolve RANKING.md from operator triage [auto]", "--", rel], root);
+    git(["add", "--", ...rels], root);
+    git(["commit", "-m", message, "--", ...rels], root);
   } catch (e: any) {
     return { committed: false, pushed: false, note: "commit failed: " + String(e?.message || e).slice(0, 140) };
   }
   if (!push) return { committed: true, pushed: false, note: "committed (push disabled)" };
   try {
     git(["push"], root);
-    return { committed: true, pushed: true, note: "committed + pushed RANKING.md" };
+    return { committed: true, pushed: true, note: "committed + pushed " + rels.join(", ") };
   } catch (e: any) {
-    return { committed: true, pushed: false, note: "committed; push failed (retries next dream): " + String(e?.message || e).slice(0, 140) };
+    return { committed: true, pushed: false, note: "committed; push failed (retries next run): " + String(e?.message || e).slice(0, 140) };
   }
+}
+
+/** Thin wrapper: commit+push ONLY config/RANKING.md after the dream evolves it. */
+export function commitAndPushRankingMd(opts?: { push?: boolean; git?: GitRunner }): {
+  committed: boolean;
+  pushed: boolean;
+  note: string;
+} {
+  const rel = path.relative(repoRoot(), rankingPath()) || "config/RANKING.md";
+  const r = commitAndPush([rel], "dream: evolve RANKING.md from operator triage [auto]", opts);
+  // Preserve the original, RANKING-specific note wording for existing callers/logs.
+  if (r.committed && r.pushed) return { ...r, note: "committed + pushed RANKING.md" };
+  if (!r.committed && r.note.startsWith("unchanged")) return { ...r, note: "RANKING.md unchanged — nothing to commit" };
+  return r;
 }

@@ -89,6 +89,7 @@ export interface FullConfig {
   enrich_fyi_with_model?: boolean; // default false: FYI_DONE cards use the free deterministic excerpt
   pane_a_frac_default: number; // default A|B split (Pane A share) for normal/question tasks
   pane_a_frac_pr: number; // default A|B split for PR/review tasks (narrower Overview, wider Diff)
+  soul_source?: { repo: string; path: string }; // canonical SOUL.md source in the CRM repo (git sync)
 }
 
 export type Keymap = Record<string, string>;
@@ -173,6 +174,10 @@ export function loadConfig(): FullConfig {
     auto_continue: raw.auto_continue && typeof raw.auto_continue === "object" ? raw.auto_continue : {},
     pane_a_frac_default: typeof raw.pane_a_frac_default === "number" ? raw.pane_a_frac_default : 0.4,
     pane_a_frac_pr: typeof raw.pane_a_frac_pr === "number" ? raw.pane_a_frac_pr : 0.3,
+    soul_source:
+      raw.soul_source && typeof raw.soul_source === "object" && raw.soul_source.repo && raw.soul_source.path
+        ? { repo: String(raw.soul_source.repo), path: String(raw.soul_source.path) }
+        : undefined,
   };
 }
 
