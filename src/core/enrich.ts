@@ -122,12 +122,18 @@ Patch (may be truncated):
   }
 
   // SIMPLE_QUESTION or COMPLEX_DECISION
+  // Persona block: the operator's SOUL (voice) + AGENT (role) + learned ANSWERING rules, so the
+  // drafted options read as HE would type them, not as a generic assistant. Best-effort (require,
+  // like readRanking above) so a missing soul layer never breaks enrichment.
+  let persona = "";
+  try { persona = require("./soul").personaBlock() || ""; } catch {}
   return `A Claude Code session is WAITING on its operator. ${ctxLine}
+${persona}
 Return JSON with keys:
 one_liner: a single line of context so the operator understands the question without reading the transcript.
 ${CONTEXT_RULE}
 ${PROMPT_SUMMARY_RULE}
-options: an array of 2-4 DISTINCT candidate answers, each phrased exactly as what the operator would type back to the session — concrete and decisive, best-first. For a yes/no include both. For a multiple-choice decision, one per choice.
+options: an array of 2-4 DISTINCT candidate answers, each phrased exactly as what the operator would type back to the session (in HIS voice above) — concrete and decisive, best-first. For a yes/no include both. For a multiple-choice decision, one per choice.
 suggested_answer: the single best answer (equal to options[0]).
 ${importanceRules}
 Session title: ${input.title}

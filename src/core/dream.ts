@@ -222,6 +222,30 @@ export async function runDream(db: DatabaseSync): Promise<DreamResult & { rankin
   // Reflect on answer quality too (never perturbs ranking — prioritization stays primary).
   let answers: { summary: string } | undefined;
   try { answers = dreamAnswers(db); } catch { /* answer reflection is best-effort */ }
+
+  // Sync the shared SOUL (voice) from the CRM, then run the conversation-review loop that evolves
+  // ANSWERING.md + writes skills from the day's answer exchanges. Both best-effort — a failure logs
+  // a note but never throws into the dream. See soul.ts / reflect.ts.
+  try {
+    const { syncSoulFromCrm, soulPath } = require("./soul");
+    const { commitAndPush } = require("./ranking");
+    const path = require("path");
+    const s = syncSoulFromCrm();
+    db.prepare("INSERT INTO dream_log (summary) VALUES (?)").run("soul: " + s.note);
+    if (s.synced) {
+      try {
+        const rel = path.relative(require("./ranking").repoRoot(), soulPath()) || "config/SOUL.md";
+        const g = commitAndPush([rel], "dream: sync SOUL.md from CRM (Jarvis voice) [auto]");
+        if (g.committed) db.prepare("INSERT INTO dream_log (summary) VALUES (?)").run("git: " + g.note);
+      } catch { /* git best-effort */ }
+    }
+  } catch { /* soul sync best-effort */ }
+  try {
+    const { runReflect } = require("./reflect");
+    const { loadConfig } = require("./config");
+    await runReflect(db, { model: loadConfig().models.triage });
+  } catch { /* reflect is best-effort */ }
+
   try {
     const { evolveRankingMd, commitAndPushRankingMd } = require("./ranking");
     const { loadConfig } = require("./config");

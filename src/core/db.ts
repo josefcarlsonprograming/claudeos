@@ -286,6 +286,17 @@ function migrate(db: DatabaseSync): void {
       summary TEXT NOT NULL
     );
 
+    -- Nightly conversation-review ("reflect"): a trajectory score (0-100) of whether the
+    -- cockpit is getting BETTER at drafting answers / doing the operator's ABC questions.
+    -- One row per run_date (upserted); window_stats_json holds the day/week rollup it scored.
+    CREATE TABLE IF NOT EXISTS reflect_scores (
+      run_date TEXT PRIMARY KEY,
+      score INTEGER,
+      window_stats_json TEXT,
+      rationale TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     -- Singleton key/value bag for small engine bookkeeping (e.g. last_auto_launch_at,
     -- the kanban auto-launch cooldown timestamp). One row per key.
     CREATE TABLE IF NOT EXISTS meta (

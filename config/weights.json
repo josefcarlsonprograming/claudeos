@@ -27,6 +27,8 @@
   "focus": "",
   "_diff_comment": "The Diff view compares a session's worktree branch against this base (committed + uncommitted). PR tasks use the real gh pr diff instead. Falls back to origin/HEAD, then main/master.",
   "default_base_branch": "main",
+  "_soul_source_comment": "Canonical SOUL.md lives in the CRM (Jarvis voice-learner distills it nightly from real emails + calls). The nightly dream pulls it read-only via `gh api repos/<repo>/contents/<path>` into config/SOUL.md. Best-effort: if gh is missing/unauthed/offline, the last synced copy is kept. Requires gh authed to the (private) CRM repo on the server.",
+  "soul_source": { "repo": "josefcarlsonprograming/BioSonic-CRM", "path": "agent/SOUL.md" },
   "_pane_widths_comment": "Default A|B split fraction (Pane A share) per task mode. PR/review tasks (Pane B = Diff) want a wider diff, so Overview is narrower. Operator drags override per-mode and persist.",
   "pane_a_frac_default": 0.4,
   "pane_a_frac_pr": 0.3,
