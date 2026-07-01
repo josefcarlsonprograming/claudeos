@@ -10,6 +10,21 @@ function git(repo: string, args: string[]): string {
   return execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
 }
 
+/** Canonicalize a path (resolve symlinked prefixes). This matters on macOS, where `os.tmpdir()`
+ *  yields `/var/folders/…` but git's `worktree list` reports the resolved real path
+ *  `/private/var/folders/…`. Building every worktree path from the canonical repo root keeps our
+ *  constructed paths byte-identical to what git reports, so the idempotency guard actually matches
+ *  an existing worktree instead of re-running `worktree add` on an already-registered path (git
+ *  exits 128) — and a session's stored worktree_path stays stable across re-opens. A not-yet-created
+ *  path can't be resolved, so we fall back to a normalized absolute path. */
+function realpath(p: string): string {
+  try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+}
+/** True when two filesystem paths point at the SAME location (symlink/normalization tolerant). */
+function samePath(a: string, b: string): boolean {
+  return realpath(a) === realpath(b);
+}
+
 export interface WorktreeInfo {
   path: string;
   branch: string;
@@ -56,13 +71,14 @@ function resolveBase(repo: string, baseRef?: string): string {
 
 /** Create (or reuse) an isolated worktree + branch for a task. */
 export function createWorktree(repo: string, taskSlug: string, baseRef?: string): WorktreeInfo {
+  repo = realpath(repo); // canonical root → constructed paths match git's `worktree list` output
   const branch = `cockpit/${taskSlug}`;
   const wtRoot = path.join(repo, ".cockpit-worktrees");
   fs.mkdirSync(wtRoot, { recursive: true });
   const wtPath = path.join(wtRoot, taskSlug);
 
   // Already present?
-  const existing = listWorktrees(repo).find((w) => w.path === wtPath);
+  const existing = listWorktrees(repo).find((w) => samePath(w.path, wtPath));
   if (existing) return existing;
 
   // Create branch if missing. Base resolution (and its possible fetch) only happens when
@@ -86,13 +102,14 @@ export function createWorktree(repo: string, taskSlug: string, baseRef?: string)
  *  and falls back to a DETACHED checkout of origin/<head> when the branch is already checked out
  *  in another worktree (git refuses the same branch in two worktrees). */
 export function createPrWorktree(repo: string, prNumber: number, headRef: string): WorktreeInfo {
+  repo = realpath(repo); // canonical root → constructed paths match git's `worktree list` output
   const wtRoot = path.join(repo, ".cockpit-worktrees");
   fs.mkdirSync(wtRoot, { recursive: true });
   const slug =
     `pr-${prNumber}-` +
     (headRef.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "head");
   const wtPath = path.join(wtRoot, slug);
-  const existing = listWorktrees(repo).find((w) => w.path === wtPath);
+  const existing = listWorktrees(repo).find((w) => samePath(w.path, wtPath));
   if (existing) return { ...existing, branch: headRef };
 
   // Best-effort fetch so a PR pushed from another machine is checkout-able (offline / no-remote

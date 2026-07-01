@@ -24,3 +24,8 @@ src/eval/goldset/pending-review.json
 src/eval/results/verifier-review.html
 src/eval/results/verifier-sonnet.json
 src/eval/results/verifier-haiku.json
+
+# local push helpers / scratch (kept from the old main branch)
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
