@@ -11,7 +11,7 @@ import { applyFeedback, Feedback, allAdjustments, recentDecisions, AdjustmentRow
 import { recordAnswer } from "./answerLog";
 import { loadConfig, saveFocus, FullConfig, Weights } from "./config";
 import { lastDreams } from "./dream";
-import { ItemRow, SessionRow, setPinned, setManualImportance, setManualTitle, setSnoozePenalty, recordExample, getLearnedWeights, recentExamples } from "./db";
+import { ItemRow, SessionRow, SessionState, setPinned, setManualImportance, setManualStateOverride, setSessionState, setManualTitle, setSnoozePenalty, recordExample, getLearnedWeights, recentExamples } from "./db";
 import { effectiveSnoozePenalty } from "./priority";
 import { readRanking } from "./ranking";
 import { prDiff, prStatus, prMerge, prSeedPrompt, localRepoForPr } from "./pr";
@@ -939,6 +939,48 @@ export class Controller {
     // Auto-unpin + penalty must land in the cached priorities even when the caller (Electron
     // IPC) doesn't follow up with a rerank of its own.
     this.engine.rerank();
+  }
+
+  /** MANUAL STATE OVERRIDE — the operator right-clicked a card to correct its status
+   *  (WAITING_INPUT | WORKING | DONE, or null to clear and let the detector decide again). The
+   *  engine applies it with final authority (see engine.applyManualOverride). Every correction is
+   *  logged to decision_log — feedback='manual_state', `state`=what the auto-detector last said,
+   *  `decision`=what the operator changed it to — so the nightly learning pass can see exactly where
+   *  the detector was wrong. Undoable. */
+  overrideState(sessionId: number, state: SessionState | null): { ok: boolean } {
+    const s = this.getSession(sessionId);
+    if (!s) return { ok: false };
+    const prev = s.manual_state ?? null;
+    const prevBase = s.manual_state_base ?? null;
+    const prevState = s.state;
+    // base = what the detector currently says (s.state); the engine drops the override once the auto
+    // detection moves off this, so a silenced session can't strand a later genuine question.
+    setManualStateOverride(this.db, sessionId, state, s.state);
+    const undoOps: UndoOp[] = [
+      { t: "setSession", id: sessionId, fields: { manual_state: prev, manual_state_base: prevBase, state: prevState } },
+    ];
+    if (state) {
+      // Reflect the corrected status on the row NOW (the engine then holds it there until the
+      // detector moves off the base). Forcing a non-actionable state (WORKING/idle) also drops the
+      // card from Up Next immediately — an explicit operator action, the only thing allowed to pull a
+      // pending item (mirrors dismiss/complete; the tick itself never does this — see the LOCK guard).
+      setSessionState(this.db, sessionId, state);
+      if (state === "WORKING" || state === "UNKNOWN") {
+        for (const r of this.db.prepare("SELECT id FROM items WHERE session_id=? AND status='pending'").all(sessionId) as Array<{ id: number }>) {
+          this.db.prepare("UPDATE items SET status='superseded' WHERE id=?").run(r.id);
+          undoOps.push({ t: "setItem", id: r.id, fields: { status: "pending" } });
+        }
+      }
+      const dlId = nextDecisionLogId(this.db);
+      this.db
+        .prepare("INSERT INTO decision_log (item_id, session_id, category, state, feedback, decision) VALUES (?,?,?,?,?,?)")
+        .run(null, sessionId, null, prevState, "manual_state", state);
+      undoOps.push({ t: "delDecisionLog", id: dlId });
+    }
+    const name = (s as any).manual_title || s.clean_title || s.title || "session";
+    pushUndo(this.db, "overrideState", state ? `status → ${state.replace("_", " ").toLowerCase()} “${name}”` : `cleared manual status on “${name}”`, undoOps);
+    this.engine.rerank();
+    return { ok: true };
   }
 
   /** One-keystroke feedback verbs. */

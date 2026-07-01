@@ -543,6 +543,13 @@ export class Engine {
         }
       }
       }
+      // MANUAL STATE OVERRIDE — the operator right-clicked this card to correct a status the
+      // auto-detector read wrong. Final say over BOTH the heuristic and the ready-gate above (the
+      // whole point is "Claude got this wrong, I say it's X"): forcing WAITING_INPUT/DONE surfaces
+      // it, forcing WORKING silences it. See applyManualOverride for the sticky-until-reality-moves
+      // rule that keeps a silenced session from stranding a real question forever.
+      const mo = this.applyManualOverride(s, state);
+      if (mo) { state = mo.state; reason = mo.reason; }
       res.states[state] = (res.states[state] || 0) + 1;
       setSessionState(this.db, s.id, state);
 
@@ -943,6 +950,30 @@ export class Engine {
       quietPeriodMs: this.cfg.triage.quiet_period_ms,
     });
     return { ...d, view, msSinceWrite, mtimeMs, processAlive: alive };
+  }
+
+  /** Apply the operator's MANUAL STATE OVERRIDE, if any, with final authority over the heuristic and
+   *  the ready-gate — set by right-clicking a card whose auto-read status was wrong. Sticky-until-
+   *  reality-moves: on the FIRST tick after the operator sets it we record the current auto-detected
+   *  state (`autoState`) as the base; the override then holds until the auto state actually moves off
+   *  that base, at which point it is cleared and the fresh detection is trusted again. That auto-
+   *  expiry is what stops a session the operator silenced (forced WORKING) from stranding a genuine
+   *  question hidden forever. Returns the forced {state,reason}, or null when there is no override
+   *  (or it just expired). */
+  private applyManualOverride(s: SessionRow, autoState: SessionState): { state: SessionState; reason: string } | null {
+    const forced = s.manual_state;
+    if (!forced) return null;
+    const base = s.manual_state_base;
+    if (base != null && autoState !== base) {
+      // Reality moved off what the detector said when the operator corrected it → drop the override,
+      // trust the fresh detection. This is what stops a session silenced (forced WORKING) from
+      // stranding a genuine question hidden forever.
+      try { this.db.prepare("UPDATE sessions SET manual_state=NULL, manual_state_base=NULL WHERE id=?").run(s.id); } catch {}
+      s.manual_state = null;
+      s.manual_state_base = null;
+      return null;
+    }
+    return { state: forced, reason: "manual override — you set this status" };
   }
 
   /** Last-activity timestamp in ms: transcript mtime (what "X ago" shows) — the moment Claude or

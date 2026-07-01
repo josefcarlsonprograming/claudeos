@@ -41,6 +41,8 @@ export interface SessionRow {
   tags: string | null;           // JSON array of category tags (haiku-assigned), e.g. ["training"]
   meta_gen_prompts: number;      // # of user prompts seen when title+tags were last generated (-1 = never)
   state: SessionState;
+  manual_state: SessionState | null;      // operator-forced status (right-click a card); wins over detection
+  manual_state_base: SessionState | null; // auto-detected state at override time; override auto-clears when the auto state moves off it
   blocks_other_work: number; // 0/1 operator-declared
   deadline: string | null; // ISO date or null
   kind: string; // 'claude' (a Claude Code session) | 'pr' (a GitHub PR to review)
@@ -367,6 +369,11 @@ function migrate(db: DatabaseSync): void {
     "manual_title TEXT",
     "tags TEXT",
     "meta_gen_prompts INTEGER NOT NULL DEFAULT -1",
+    // MANUAL STATE OVERRIDE (operator right-clicks a card to correct a mis-read status). manual_state
+    // is the forced state; manual_state_base is the auto-detected state captured on the first tick
+    // after the override, used to auto-expire the override once reality actually moves off it.
+    "manual_state TEXT",
+    "manual_state_base TEXT",
   ]) {
     try {
       db.exec(`ALTER TABLE sessions ADD COLUMN ${col};`);
@@ -552,6 +559,16 @@ export function setSessionState(db: DatabaseSync, id: number, state: SessionStat
     state,
     id
   );
+}
+
+/** MANUAL STATE OVERRIDE — persist the operator's forced status (WAITING_INPUT | WORKING | DONE),
+ *  or null to clear it. `base` is the auto-detected state AT OVERRIDE TIME (what the detector thought
+ *  when the operator corrected it); the engine auto-clears the override once the auto detection moves
+ *  off that base (reality changed → trust the detector again), so a silenced session can never strand
+ *  a real question forever. */
+export function setManualStateOverride(db: DatabaseSync, id: number, state: SessionState | null, base: SessionState | null): void {
+  db.prepare("UPDATE sessions SET manual_state=?, manual_state_base=?, updated_at=datetime('now') WHERE id=?")
+    .run(state, state == null ? null : base, id);
 }
 
 export function allSessions(db: DatabaseSync): SessionRow[] {

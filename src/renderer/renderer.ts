@@ -899,18 +899,39 @@ function renderQueue() {
         : "";
       // Rename affordance only for REAL sessions (team rows are synthetic, nothing to rename).
       const renameBtn = it._team ? "" : `<span class="rename-btn" data-sid="${s.id}" title="rename (or double-click the name)">✎</span>`;
+      // Status dot — shows what Claude tagged this card (waiting/done/etc.); click or right-click the
+      // card to correct it. Team rows are synthetic (their children carry per-teammate status).
+      const stateDot = it._team ? "" : `<span class="dot ${s.state} statedot" data-sid="${s.id}" title="status: ${String(s.state || "UNKNOWN").replace("_", " ").toLowerCase()} — click to change"></span> `;
       return `
-    <li class="${i === S.sel ? "sel" : ""} ${it._virtual ? "virtual" : ""} ${it._team ? "team" : ""}" data-i="${i}">
-      <div class="row1"><span class="t">${i + 1}. ${pin}${pr}${kan}${team}${man}${snz} <span class="qt" data-sid="${s.id}">${esc(sessionHeadline(s, 44))}</span>${renameBtn}${tagChips(s)}</span>${prioCell}</div>
+    <li class="${i === S.sel ? "sel" : ""} ${it._virtual ? "virtual" : ""} ${it._team ? "team" : ""}" data-i="${i}" data-sid="${s.id}">
+      <div class="row1"><span class="t">${i + 1}. ${stateDot}${pin}${pr}${kan}${team}${man}${snz} <span class="qt" data-sid="${s.id}">${esc(sessionHeadline(s, 44))}</span>${renameBtn}${tagChips(s)}</span>${prioCell}</div>
       <div class="c">${esc(it.category || "")} · ${esc(it.one_liner || "")}</div>${kids}
     </li>`;
     }
     )
     .join("");
-  document.querySelectorAll("#queue li").forEach((el) =>
+  document.querySelectorAll("#queue li").forEach((el) => {
     el.addEventListener("click", () => {
       selectIndex(parseInt((el as HTMLElement).dataset.i!, 10)); // FIX U: explicit user selection
       render();
+    });
+    // Right-click a card → status menu (skip synthetic team rows: no single session behind them).
+    el.addEventListener("contextmenu", (e) => {
+      const sid = parseInt((el as HTMLElement).dataset.sid || "", 10);
+      if (!sid) return;
+      const it = S.state.queue[parseInt((el as HTMLElement).dataset.i!, 10)];
+      if (it && it._team) return;
+      e.preventDefault();
+      showStateMenu(sid, it?.session?.state || "UNKNOWN", (e as MouseEvent).clientX, (e as MouseEvent).clientY);
+    });
+  });
+  // Left-click the status dot → same menu (the operator "presses the status of the card").
+  document.querySelectorAll("#queue .statedot").forEach((el) =>
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const sid = parseInt((el as HTMLElement).dataset.sid!, 10);
+      const cur = (el.className.match(/dot (\w+)/) || [])[1] || "UNKNOWN";
+      showStateMenu(sid, cur, (e as MouseEvent).clientX, (e as MouseEvent).clientY);
     })
   );
   // Inline rename: ✎ click or double-click the name. The session comes from the row's queue item.
@@ -1340,7 +1361,7 @@ function renderSessions() {
         const lbl = etaMin > 0 ? `~${timeLeft(r.eta_at)} left` : "ETA reached — re-checking";
         etaBar = `<span class="sess-etabar ${due ? "due" : "run"}" title="${lbl}" aria-label="${lbl}"><i style="width:${pct}%"></i></span>`;
       }
-      return `<li class="sessrow ${s.surfaced ? "surfaced" : ""} ${live ? "" : "roster-only"}" data-sid="${r.id}" data-live="${live ? 1 : 0}" data-title="${esc(r.title)}" title="${live ? "open live terminal" : "recent session (no live pane)"}"><span class="dot ${r.state}"></span><span class="sess-title">${title}${tag}</span><span class="rename-btn" data-sid="${r.id}" title="rename">✎</span>${tagChips(r)}${r.pr_repo && r.pr_number ? `<span class="badge pr" title="open GitHub PR #${r.pr_number}">PR</span>` : ""}${runTag}${etaBar}${agoTag}<span class="watch-eye">${live ? "👁" : ""}</span></li>`;
+      return `<li class="sessrow ${s.surfaced ? "surfaced" : ""} ${live ? "" : "roster-only"}" data-sid="${r.id}" data-live="${live ? 1 : 0}" data-title="${esc(r.title)}" title="${live ? "open live terminal" : "recent session (no live pane)"}"><span class="dot ${r.state} statedot" data-sid="${r.id}" title="status: ${String(r.state || "UNKNOWN").replace("_", " ").toLowerCase()} — click to change"></span><span class="sess-title">${title}${tag}</span><span class="rename-btn" data-sid="${r.id}" title="rename">✎</span>${tagChips(r)}${r.pr_repo && r.pr_number ? `<span class="badge pr" title="open GitHub PR #${r.pr_number}">PR</span>` : ""}${runTag}${etaBar}${agoTag}<span class="watch-eye">${live ? "👁" : ""}</span></li>`;
     })
     .join("");
   // Inline rename via the ✎ (single click on the row still opens the terminal, so the pencil is
@@ -1357,10 +1378,63 @@ function renderSessions() {
   // Click ANY session to open its terminal. The server attaches the live pane, RESUMES a stopped
   // session (`claude --resume` into its durable claudeos-<id> tmux), or shows read-only if truly
   // gone — but a terminal is NEVER unclickable here.
-  document.querySelectorAll("#sessions li.sessrow").forEach((el) =>
+  document.querySelectorAll("#sessions li.sessrow").forEach((el) => {
     el.addEventListener("click", () => {
       const sid = parseInt((el as HTMLElement).dataset.sid!, 10);
       attachReviewSession(sid);
+    });
+    // Right-click a roster row → status menu (correct a mis-read status).
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const sid = parseInt((el as HTMLElement).dataset.sid!, 10);
+      const dot = el.querySelector(".statedot") as HTMLElement | null;
+      const cur = (dot?.className.match(/dot (\w+)/) || [])[1] || "UNKNOWN";
+      showStateMenu(sid, cur, (e as MouseEvent).clientX, (e as MouseEvent).clientY);
+    });
+  });
+  // Click the status dot itself (don't open the terminal) → status menu.
+  document.querySelectorAll("#sessions .statedot").forEach((el) =>
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const sid = parseInt((el as HTMLElement).dataset.sid!, 10);
+      const cur = (el.className.match(/dot (\w+)/) || [])[1] || "UNKNOWN";
+      showStateMenu(sid, cur, (e as MouseEvent).clientX, (e as MouseEvent).clientY);
+    })
+  );
+}
+
+/** Manual status override menu — right-click a card / roster row (or click its status dot) to
+ *  correct a status the auto-detector read wrong (WAITING_INPUT | WORKING | DONE), or clear the
+ *  override to let Claude decide again. This is the TRANSIENT status only; permanent "done + archive"
+ *  stays the complete action (Ctrl+G e). The change is logged server-side so the ranking loop learns
+ *  where detection was wrong. */
+function showStateMenu(sessionId: number, curState: string, x: number, y: number) {
+  document.querySelectorAll(".ctx-menu").forEach((m) => m.remove());
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  const opts: Array<[string, string]> = [
+    ["WAITING_INPUT", "waiting for me"],
+    ["WORKING", "working"],
+    ["DONE", "done"],
+  ];
+  menu.innerHTML =
+    opts.map(([val, lbl]) => `<div class="ctx-item" data-state="${val}"><span class="dot ${val}"></span>${lbl}${val === curState ? " ✓" : ""}</div>`).join("") +
+    `<div class="ctx-sep"></div>` +
+    `<div class="ctx-item ctx-clear" data-state="">↺ let Claude decide</div>`;
+  document.body.appendChild(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8)) + "px";
+  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8)) + "px";
+  const close = () => { menu.remove(); document.removeEventListener("mousedown", onDoc, true); };
+  const onDoc = (e: MouseEvent) => { if (!menu.contains(e.target as Node)) close(); };
+  setTimeout(() => document.addEventListener("mousedown", onDoc, true), 0);
+  menu.querySelectorAll(".ctx-item").forEach((el) =>
+    el.addEventListener("click", () => {
+      const st = (el as HTMLElement).dataset.state || "";
+      close();
+      setStatus(st ? `status → ${st.replace("_", " ").toLowerCase()}…` : "cleared manual status — Claude decides…");
+      // Server quick-reranks + broadcasts an update, which refreshes the queue/roster automatically.
+      api.overrideState(sessionId, st).catch(() => {});
     })
   );
 }

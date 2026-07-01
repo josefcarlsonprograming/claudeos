@@ -549,6 +549,18 @@ const server = http.createServer(async (req, res) => {
         quickRerank(); // cheap re-rank, respond immediately
         return send(res, 200, { ok: true });
       }
+      if (p === "/api/overrideState") {
+        // MANUAL STATE OVERRIDE: operator right-clicked a card to correct its status. state is one
+        // of WAITING_INPUT | WORKING | DONE, or null/"" to clear the override (let Claude decide).
+        const sid = numId(body.sessionId);
+        if (sid == null) return send(res, 400, { error: "bad sessionId" });
+        const raw = body.state === null || body.state === undefined || body.state === "" ? null : String(body.state);
+        if (raw !== null && !["WAITING_INPUT", "WORKING", "DONE"].includes(raw))
+          return send(res, 400, { error: "bad state" });
+        const r = ctrl.overrideState(sid, raw as any);
+        quickRerank(); // cheap re-sort + broadcast so the card moves/surfaces immediately
+        return send(res, 200, r);
+      }
       if (p === "/api/prDiff") {
         const sid = numId(body.sessionId);
         if (sid == null) return send(res, 400, { error: "bad sessionId" });
