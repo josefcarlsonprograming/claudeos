@@ -1147,6 +1147,46 @@ async function run() {
       }
     } finally { try { await detail.close(); } catch {} }
   });
+
+  // ── ＋ NEW-TERMINAL launcher (upper-left) ───────────────────────────────────
+  await section("＋ new-terminal button opens a repo picker and launches into the chosen repo", async () => {
+    const btn = page.locator("#new-term-btn");
+    check("the ＋ new-terminal button is rendered in the header", await btn.isVisible());
+    // Menu starts hidden; clicking the ＋ reveals it.
+    check("the repo menu starts hidden", await page.locator("#new-term-menu").isHidden());
+    await btn.click();
+    check("clicking ＋ opens the repo menu", await page.locator("#new-term-menu").isVisible());
+    // The menu lists exactly the repos from config.sessions_repos (one <li> each, plus the header).
+    const repos = (await qstate()).config?.sessions_repos || [];
+    const rowCount = await page.locator("#new-term-menu li .repo-name").count();
+    check("the menu lists one row per configured repo", rowCount === repos.length, `dom=${rowCount} cfg=${repos.length}`);
+    // Clicking a repo actually fires POST /api/newSession with THAT repo (the "button does nothing"
+    // bug-class) and returns a real session id.
+    const [resp] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes("/api/newSession") && r.request().method() === "POST", { timeout: 8000 }),
+      page.locator("#new-term-menu li .repo-name").first().click(),
+    ]);
+    const body = await resp.json().catch(() => ({}));
+    check("picking a repo launches a new Claude session (ok + sessionId)", body.ok === true && typeof body.sessionId === "number");
+    check("the repo menu closes after picking", await waitFor(async () => await page.locator("#new-term-menu").isHidden(), 4000));
+  });
+
+  // ── ✓ Archive button vs a PINNED task (the reported bug) ────────────────────
+  await section("✓ Archive completes a PINNED task instead of just advancing", async () => {
+    // Repro of "archive not working — it just drops me to the next item": the renderer used to
+    // early-return (advance without archiving) when the selected task was pinned. Archive is an
+    // EXPLICIT action, so a pin must not block it.
+    const item = (await qstate()).queue.find((q: any) => /scratch/i.test(q.session.title));
+    check("setup: a scratch task exists to archive", !!item);
+    if (!item) return;
+    const sid = item.session_id as number;
+    await page.evaluate((s: number) => fetch("/api/pin", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: s, pinned: true }) }), sid);
+    check("setup: the task is pinned", await waitFor(async () => sessById(await qstate(), sid)?.pinned === 1, 4000));
+    await selectRow("scratch"); // select the (now top-pinned) row so Archive acts on it
+    await page.locator("#archive-btn").click();
+    // completeTask marks it completed → allSessions excludes it → it leaves the queue AND the roster.
+    check("clicking ✓ Archive on a pinned task archives it (session leaves the queue + roster)", await waitFor(async () => sessById(await qstate(), sid) == null, 5000));
+  });
 }
 
 (async () => {

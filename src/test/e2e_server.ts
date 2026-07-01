@@ -92,6 +92,12 @@ async function run(srv: DemoServer) {
     check("POST /api/newSession (with importance) returns {ok, sessionId}", r.ok === true && typeof r.sessionId === "number");
     const r2 = await postJson("/api/newSession", { kind: "claude", prompt: "no priority here" });
     check("POST /api/newSession (no importance) still returns {ok, sessionId}", r2.ok === true && typeof r2.sessionId === "number");
+    // The ＋ new-terminal picker passes a `repo` (one of config.sessions_repos). The endpoint must
+    // accept it (server validates it against the allow-list) and still return ok+id.
+    const st0 = await state();
+    const repo = (st0 as any).config?.sessions_repos?.[0];
+    const r3 = await postJson("/api/newSession", { kind: "claude", prompt: "in a chosen repo", repo });
+    check("POST /api/newSession (with a repo) returns {ok, sessionId}", r3.ok === true && typeof r3.sessionId === "number");
   }
 
   // snooze applies a visible penalty

@@ -127,7 +127,7 @@
     prStatus: (sessionId) => jpost("/api/prStatus", { sessionId }),
     prMerge: (sessionId, method, deleteBranch) => jpost("/api/prMerge", { sessionId, method, deleteBranch: !!deleteBranch }),
     launchSession: (repo, title, prompt) => jpost("/api/launchSession", { repo, title, prompt }),
-    newSession: (kind, prompt, importance) => jpost("/api/newSession", { kind, prompt, importance }),
+    newSession: (kind, prompt, importance, repo) => jpost("/api/newSession", { kind, prompt, importance, repo: repo || null }),
     complete: (sessionId) => jpost("/api/complete", { sessionId }),
     activate: (sessionId) => jpost("/api/activate", { sessionId }),
     reasonFeedback: (itemId, direction, reason) => jpost("/api/reasonFeedback", { itemId, direction, reason }),

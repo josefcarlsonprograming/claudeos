@@ -2217,13 +2217,10 @@ async function completeSelected() {
     await refresh();
     return;
   }
-  // A pinned task can't be completed/archived from under the cursor — advance instead; the pin
-  // stays at the top. Unpin it first ({pin_toggle}) to actually complete it.
-  if (it && it.session && it.session.pinned) {
-    setStatus(`“${it.session.title}” is pinned — ${S.keymap.pin_toggle || "p"} to unpin before completing · advancing`);
-    moveQueueSel(1);
-    return;
-  }
+  // ARCHIVE IS EXPLICIT — a pin must NOT block it. Clicking ✓ Archive (or ⌘E) on a pinned task
+  // used to just advance to the next item WITHOUT archiving (the operator's "archive not working,
+  // it just drops me to the next item" report). Completing marks the session completed, so it
+  // leaves the queue regardless of the pin; it's undoable (undo restores completed_at AND the pin).
   const sid = it ? it.session.id : selectedSessionId();
   if (sid == null) { setStatus("no task selected to complete"); return; }
   if (it) optimisticAdvance(it.id);
@@ -4323,6 +4320,74 @@ function initDetail(): void {
   setTimeout(() => openDetailWindow(), 400);
   api.onUpdate(async () => { await refresh(); });
   setStatus(`ClaudeOS ready · press ? for keys · ${masterLabel()} then o/t/d · ; switches pane`);
+
+  // -------------------------------------------------------------------------
+  // ＋ NEW-TERMINAL launcher (upper-left). Click → a dropdown of the repos in
+  // config.sessions_repos; picking one launches a fresh `claude` session in a new
+  // worktree of that repo and opens its terminal in pane B. Mirrors the account
+  // picker's show/hide-menu pattern (no overlay keyboard plumbing needed).
+  // -------------------------------------------------------------------------
+  (function wireNewTermPicker() {
+    const root = document.getElementById("new-term") as HTMLElement | null;
+    const btn = document.getElementById("new-term-btn") as HTMLButtonElement | null;
+    const menu = document.getElementById("new-term-menu") as HTMLUListElement | null;
+    if (!root || !btn || !menu) return;
+
+    function repos(): string[] {
+      const r = (S.state && (S.state as any).config && (S.state as any).config.sessions_repos) || [];
+      return Array.isArray(r) ? r.filter((x: any) => typeof x === "string" && x) : [];
+    }
+    function base(p: string): string { const parts = String(p).replace(/\/+$/, "").split("/"); return parts[parts.length - 1] || p; }
+
+    async function launch(repo: string): Promise<void> {
+      closeMenu();
+      setStatus(`opening a new Claude terminal in ${base(repo)}…`);
+      const r = await api.newSession("claude", undefined, undefined, repo).catch((e: any) => ({ ok: false, message: String(e) }));
+      if (!r || !r.ok) { setStatus("launch failed: " + ((r && (r as any).message) || "unknown")); return; }
+      await refresh();
+      openTerminalView((r as any).sessionId!);
+    }
+
+    function renderMenu(): void {
+      if (!menu) return;
+      menu.innerHTML = "";
+      const rs = repos();
+      const head = document.createElement("li");
+      head.className = "head";
+      head.textContent = "New terminal in…";
+      menu.appendChild(head);
+      if (!rs.length) {
+        const li = document.createElement("li");
+        li.className = "empty";
+        li.textContent = "no repos — add paths to sessions_repos in config/weights.json";
+        menu.appendChild(li);
+        return;
+      }
+      for (const repo of rs) {
+        const li = document.createElement("li");
+        const name = document.createElement("span");
+        name.className = "repo-name";
+        name.textContent = base(repo);
+        const path = document.createElement("span");
+        path.className = "repo-path";
+        path.textContent = repo;
+        li.appendChild(name);
+        li.appendChild(path);
+        li.addEventListener("click", (e) => { e.stopPropagation(); void launch(repo); });
+        menu.appendChild(li);
+      }
+    }
+
+    function openMenu(): void { if (menu) { renderMenu(); menu.hidden = false; } }
+    function closeMenu(): void { if (menu) menu.hidden = true; }
+
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (menu && menu.hidden) openMenu(); else closeMenu();
+    });
+    document.addEventListener("click", (e) => { if (root && !root.contains(e.target as Node)) closeMenu(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && menu && !menu.hidden) closeMenu(); });
+  })();
 
   // -------------------------------------------------------------------------
   // Manual Claude-account picker (~/.claude.json swap).

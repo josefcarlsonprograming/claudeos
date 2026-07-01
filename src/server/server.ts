@@ -587,7 +587,8 @@ const server = http.createServer(async (req, res) => {
           body.importance === null || body.importance === undefined || body.importance === ""
             ? null
             : Math.max(0, Math.min(100, Math.round(Number(body.importance)) || 0));
-        const r = ctrl.newSession(kind, typeof body.prompt === "string" ? body.prompt : undefined, imp);
+        const repo = typeof body.repo === "string" && body.repo ? body.repo : null;
+        const r = ctrl.newSession(kind, typeof body.prompt === "string" ? body.prompt : undefined, imp, repo);
         await tickLoop();
         return send(res, 200, r);
       }

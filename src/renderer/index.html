@@ -16,6 +16,10 @@
   <body>
     <div id="demo-banner" class="demo-banner" style="display:none">⚠ DEMO — nothing here is real. Every button is safe; nothing touches tmux, GitHub, or real sessions.</div>
     <header>
+      <div id="new-term" class="new-term">
+        <button id="new-term-btn" class="new-term-btn" type="button" title="New terminal — pick a repo and start a fresh Claude session" aria-label="New terminal">＋</button>
+        <ul id="new-term-menu" class="new-term-menu" hidden></ul>
+      </div>
       <div class="brand"><img src="/logo.png" class="brand-logo" alt="">ClaudeOS<span class="build-marker" id="build-marker"></span></div>
       <div class="focus-bar">
         <span class="focus-label">focus:</span>

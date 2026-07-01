@@ -1795,10 +1795,15 @@ export class Controller {
     kind: "claude" | "shell",
     prompt?: string,
     importance?: number | null,
+    repo?: string | null,
   ): { ok: boolean; sessionId?: number; kind: string; message: string } {
     try {
-      const repo = this.cfg.sessions_default_repo;
-      const id = this.sessions.launchTerminalSession({ kind, repo, skipPermissions: kind === "claude", prompt });
+      // Repo can be chosen at launch (the ＋ new-terminal picker passes one of `sessions_repos`);
+      // fall back to the configured default. Only honor a repo that's actually on the offered list
+      // (or the default) so an arbitrary path can't be launched from the client.
+      const allowed = new Set([...(this.cfg.sessions_repos || []), this.cfg.sessions_default_repo].filter(Boolean));
+      const chosen = repo && allowed.has(repo) ? repo : this.cfg.sessions_default_repo;
+      const id = this.sessions.launchTerminalSession({ kind, repo: chosen, skipPermissions: kind === "claude", prompt });
       // Optional manual importance set at launch (quick-prompt priority). Write it straight to the
       // row — no undo entry / example-recording (the session is brand-new, has no queue item yet).
       if (importance != null && Number.isFinite(importance)) {
