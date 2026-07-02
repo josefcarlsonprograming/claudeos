@@ -659,3 +659,22 @@ body.demo header { border-bottom: 1px solid #6b5520; }
 .search-card .sc-ago { float: right; font-size: 11px; color: var(--dim); }
 .search-spin { display: inline-block; width: 11px; height: 11px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: searchspin .7s linear infinite; vertical-align: -2px; margin-right: 6px; }
 @keyframes searchspin { to { transform: rotate(360deg); } }
+
+/* ============ CHAT view: SOUL-voiced gist feed + collapsible terminal drawer ============ */
+/* The chat pane is a flex column: the scrollable feed on top, the terminal drawer pinned below. */
+.pane-body:has(.chat-term-drawer) { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.chat-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 10px 14px; }
+/* Gist beats — short SOUL-voiced highlights, newest last. 'ask' beats (the open question) accented. */
+.chat-gist { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.gist-beat { align-self: flex-start; max-width: 94%; background: var(--panel2); border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; font-size: 13.5px; line-height: 1.45; color: var(--ink); }
+.gist-beat[data-kind="ask"] { border-color: var(--accent); background: rgba(92,200,255,0.09); font-weight: 600; }
+.gist-empty { color: var(--dim); font-style: italic; font-size: 12.5px; padding: 4px 2px; }
+.chat-card { border-top: 1px dashed var(--border); padding-top: 8px; }
+/* The raw-terminal drawer: a thin expand strip when collapsed; grows to host the pty when open. */
+.chat-term-drawer { flex: 0 0 auto; display: flex; flex-direction: column; background: #0d1117; border-top: 1px solid var(--border); }
+.chat-term-drawer[data-open="true"] { flex: 1 1 60%; min-height: 0; }
+.chat-drawer-bar { padding: 5px 12px; font-size: 12px; color: var(--dim); background: var(--panel2); cursor: pointer; user-select: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-drawer-bar:hover { color: var(--accent); }
+.chat-term-drawer[data-open="true"] .chat-drawer-bar { border-bottom: 1px solid var(--border); }
+.chat-drawer-slot { display: none; }
+.chat-term-drawer[data-open="true"] .chat-drawer-slot { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }

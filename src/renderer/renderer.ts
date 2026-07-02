@@ -46,9 +46,11 @@ interface S {
   autoOpened: Set<number>; // item ids whose live terminal we already auto-opened once (COMPLEX routing)
   autoDiffed: Set<number>; // item ids whose split diff we already auto-opened once (PR/REVIEW routing)
   autoVized: Set<string>; // "sessionId:vizCount" keys whose HTML we already auto-surfaced once (re-fires when a NEW html appears)
+  termDrawerOpen: boolean; // CHAT view: the raw-terminal drawer (bottom of the chat pane) is expanded
+  chatFocus: "answer" | "terminal"; // CHAT view: which sub-target in pane A has the keyboard (answer box vs the drawer pty)
 }
-type PaneView = "overview" | "terminal" | "diff" | "html";
-const S: S = { state: null, keymap: {}, sel: 0, rawFor: null, jumpMode: false, termSession: null, termTimer: null, term: null, termFit: null, termCols: 0, termWs: null, termNative: null, termSessionForPane: null, termIntentionalClose: false, termReconnectTimer: null, termReconnectAttempts: 0, panes: { A: "overview", B: "terminal" }, paneManual: { A: false, B: false }, paneItem: { A: null, B: null }, termPane: null, termFull: false, fullPane: null, focused: "A", selItemId: null, paneMode: "detail", paneItemId: null, diffFormat: "side-by-side", vizTab: 0, diffPatch: { A: "", B: "" }, leaderActive: false, leaderTimer: null, diffSession: null, lastCardId: null, pendingConfirm: null, autoOpened: new Set<number>(), autoDiffed: new Set<number>(), autoVized: new Set<string>() };
+type PaneView = "overview" | "terminal" | "diff" | "html" | "chat";
+const S: S = { state: null, keymap: {}, sel: 0, rawFor: null, jumpMode: false, termSession: null, termTimer: null, term: null, termFit: null, termCols: 0, termWs: null, termNative: null, termSessionForPane: null, termIntentionalClose: false, termReconnectTimer: null, termReconnectAttempts: 0, panes: { A: "overview", B: "terminal" }, paneManual: { A: false, B: false }, paneItem: { A: null, B: null }, termPane: null, termFull: false, fullPane: null, focused: "A", selItemId: null, paneMode: "detail", paneItemId: null, diffFormat: "side-by-side", vizTab: 0, diffPatch: { A: "", B: "" }, leaderActive: false, leaderTimer: null, diffSession: null, lastCardId: null, pendingConfirm: null, autoOpened: new Set<number>(), autoDiffed: new Set<number>(), autoVized: new Set<string>(), termDrawerOpen: false, chatFocus: "answer" };
 
 // ===================== DETACHED DETAIL WINDOW (the 3rd pane: Diff / HTML) =====================
 // ClaudeOS opens a SECOND OS window (window.open ?view=detail) that the operator drags onto a
@@ -617,14 +619,24 @@ function render() {
 }
 
 // ===================== TWO-PANE WORKING AREA =====================
-const A_TABS: PaneView[] = ["overview", "terminal", "diff"];
+const A_TABS: PaneView[] = ["chat", "overview", "terminal", "diff"];
 const B_TABS: PaneView[] = ["terminal", "diff"];
+/** Chat is the front view for a normal Claude task (a question/decision, or a working/done session
+ *  we have a gist for). PR + kanban keep Overview (their bodies are diff/answer-driven, no gist). */
+function isChattable(it: any): boolean {
+  return !!it && !it._team && !it._virtual && it.session
+    && it.session.kind !== "pr" && it.session.kind !== "kanban";
+}
+/** Is the SOUL-voiced chat view enabled (server config chat_enabled, default on)? */
+function chatEnabled(): boolean {
+  return !!(S.state && (S.state.config as any)?.chat_enabled !== false);
+}
 function paneDefault(P: "A" | "B", it: any): PaneView {
-  // STANDARD LAYOUT (operator request 2026-06-11): EVERY task lands as Overview (A) | Terminal (B)
-  // — PR/review tasks included. Diff/HTML live in the detached detail window; the operator can
-  // still switch either pane manually (o/h/t/d), which sticks while staying on the same task.
-  void it; // kept in the signature so callers stay uniform (defaultFocus passes it through)
-  return P === "A" ? "overview" : "terminal";
+  // Pane B always lands on the live Terminal. Pane A lands on the SOUL-voiced CHAT view for a normal
+  // task (highlights of the conversation, in the operator's voice, with the raw terminal a drawer
+  // behind it); PR/kanban and chat-disabled keep the classic Overview. Diff/HTML are manual (o/h/t/d).
+  if (P === "B") return "terminal";
+  return chatEnabled() && isChattable(it) ? "chat" : "overview";
 }
 function isDiffable(it: any): boolean {
   // Diff is available for PR/review tasks AND any session with a real worktree branch
@@ -639,7 +651,104 @@ function isDiffable(it: any): boolean {
  *  action sits behind the master key. With the STANDARD LAYOUT pane B always defaults to
  *  Terminal, so a fresh landing always focuses B; the A-branch stays for safety. */
 function defaultFocus(it: any): "A" | "B" {
+  // TERMINAL-FIRST landing is preserved (operator's 2026-06-10 preference): typing goes straight to
+  // the session in pane B. The SOUL-voiced CHAT feed is pane A's front view (what you glance at); the
+  // raw terminal is also a drawer inside it (Ctrl+G t), so "chat in front, terminal behind" holds
+  // without moving the keyboard off the pty.
   return paneDefault("B", it) === "terminal" ? "B" : "A";
+}
+
+// ---------- CHAT view: SOUL-voiced gist feed + the collapsible raw-terminal drawer ----------
+// The gist beats arrive on the queue item (it.gist) from the tick; for a session the tick hasn't
+// gisted yet (e.g. WORKING) we lazily fetch /api/gist and cache it here so the feed fills in.
+const _gistFetching = new Set<number>();
+const _gistCacheR: Record<number, { kind: string; text: string }[]> = {};
+function beatsFor(it: any): { kind: string; text: string }[] {
+  if (Array.isArray(it.gist) && it.gist.length) return it.gist;
+  return _gistCacheR[it.session.id] || [];
+}
+function maybeFetchGist(sid: number) {
+  if (!sid || _gistFetching.has(sid) || _gistCacheR[sid] || !api.gist) return;
+  _gistFetching.add(sid);
+  api.gist(sid).then((beats: any) => {
+    _gistFetching.delete(sid);
+    if (Array.isArray(beats) && beats.length) { _gistCacheR[sid] = beats; render(); }
+  }).catch(() => { _gistFetching.delete(sid); });
+}
+function renderGistBeats(host: HTMLElement, it: any) {
+  const beats = beatsFor(it);
+  host.dataset.beats = String(beats.length);
+  if (!beats.length) {
+    host.innerHTML = `<div class="gist-empty">catching up on the conversation…</div>`;
+    maybeFetchGist(it.session.id);
+    return;
+  }
+  host.innerHTML = beats
+    .map((b) => `<div class="gist-beat" data-kind="${b.kind === "ask" ? "ask" : "beat"}">${esc(b.text || "")}</div>`)
+    .join("");
+}
+
+// The single, persistent drawer element (like #term-host): created once, re-appended into the chat
+// pane after every innerHTML rebuild so its child #term-host survives. reconcileTerminal mounts the
+// one live xterm into #chat-drawer-slot when the drawer is open.
+let _chatDrawer: HTMLElement | null = null;
+function chatDrawerEl(): HTMLElement {
+  if (!_chatDrawer) {
+    _chatDrawer = document.createElement("div");
+    _chatDrawer.id = "chat-term-drawer";
+    _chatDrawer.className = "chat-term-drawer";
+    const bar = document.createElement("div");
+    bar.id = "chat-drawer-bar";
+    bar.className = "chat-drawer-bar";
+    bar.addEventListener("click", () => toggleTermDrawer());
+    const slot = document.createElement("div");
+    slot.id = "chat-drawer-slot";
+    slot.className = "chat-drawer-slot";
+    _chatDrawer.appendChild(bar);
+    _chatDrawer.appendChild(slot);
+  }
+  syncDrawerDom();
+  return _chatDrawer;
+}
+function syncDrawerDom() {
+  if (!_chatDrawer) return;
+  _chatDrawer.dataset.open = S.termDrawerOpen ? "true" : "false";
+  const bar = document.getElementById("chat-drawer-bar");
+  if (bar) bar.textContent = S.termDrawerOpen
+    ? "▾ terminal — hide (" + masterLabel() + " t)"
+    : "▸ terminal — expand to watch Claude work (" + masterLabel() + " t)";
+}
+/** Is the chat drawer's live terminal the current keyboard target? */
+function drawerTerminalFocused(): boolean {
+  return S.focused === "A" && S.panes.A === "chat" && S.termDrawerOpen && S.chatFocus === "terminal";
+}
+/** Toggle the raw-terminal drawer in the chat pane. Opening maximizes the chat pane (so the single
+ *  xterm lives in the drawer and Pane B's terminal collapses — never two terminals over one pty) and
+ *  routes the keyboard into the pty; closing restores the split and returns keys to the answer box.
+ *  Never touches selection (S.selItemId) or _termOverride — it only flips view state. */
+function toggleTermDrawer() {
+  const open = !S.termDrawerOpen;
+  S.termDrawerOpen = open;
+  S.chatFocus = open ? "terminal" : "answer";
+  S.focused = "A";
+  S.fullPane = open ? "A" : null;
+  S.termFull = S.fullPane != null;
+  try { document.body.classList.toggle("term-max", S.fullPane != null); } catch {}
+  renderPanes();
+  applyPaneWidths();
+  applyKeyboardTarget();
+  if (open) scheduleTermRefit();
+}
+
+/** Render the CHAT view into pane body `el`: the gist beats on top, then the reused Overview card
+ *  (recap + ABC options + answer box + actions), then the persistent terminal drawer. */
+function renderChatInto(el: HTMLElement, it: any, P: "A" | "B") {
+  el.innerHTML = `<div class="chat-scroll"><div class="chat-gist" id="chat-gist" data-beats="0"></div><div class="chat-card"></div></div>`;
+  const gistHost = el.querySelector("#chat-gist") as HTMLElement | null;
+  if (gistHost) renderGistBeats(gistHost, it);
+  const cardHost = el.querySelector(".chat-card") as HTMLElement | null;
+  if (cardHost) renderOverviewInto(cardHost, it, P); // reuse recap/ABC/answer box + all handlers verbatim
+  el.appendChild(chatDrawerEl()); // persistent — #term-host mounts into its slot when open
 }
 
 /** Master pane render. Detects a task change → resets non-manually-overridden panes to
@@ -673,7 +782,13 @@ function renderPanes() {
     // Overview | Terminal — a manual pane choice made on the PREVIOUS task must not leak into
     // this one (it used to: paneManual persisted forever → "html left / diff right" landings).
     // Background re-ranks (!_navFocus) keep manual choices and the sticky terminal untouched.
-    if (_navFocus) { S.paneManual.A = false; S.paneManual.B = false; }
+    if (_navFocus) {
+      S.paneManual.A = false; S.paneManual.B = false;
+      // A new task starts with the terminal drawer CLOSED, focus on the chat/answer box. If the
+      // previous task had the drawer open (which maximized pane A), restore the split.
+      if (S.termDrawerOpen) { S.termDrawerOpen = false; S.fullPane = null; try { document.body.classList.remove("term-max"); } catch {} }
+      S.chatFocus = "answer";
+    }
     for (const P of ["A", "B"] as const) {
       if (stickTerm && P === S.focused) continue; // leave the focused terminal pane intact
       if (!S.paneManual[P]) S.panes[P] = paneDefault(P, it);
@@ -762,8 +877,9 @@ function renderPane(P: "A" | "B") {
     Array.from(body.children).forEach((c) => { if (c !== host) c.remove(); });
     return; // reconcileTerminal mounts/moves the single term-host here
   }
-  // Non-terminal mode: rescue the movable term-host out of this body before overwriting it.
-  if (host.parentElement === body) { host.style.display = "none"; $("main").appendChild(host); }
+  // Non-terminal mode: rescue the movable term-host out of this body before overwriting it. Use
+  // contains() (not parentElement===body) so it's also rescued when nested inside the chat drawer.
+  if (body.contains(host)) { host.style.display = "none"; $("main").appendChild(host); }
   // FIX O: HTML visualization view (works for a selected item OR a terminal-only override session).
   if (view === "html") { renderHtmlInto(body, P); return; }
   if (!it) {
@@ -779,6 +895,15 @@ function renderPane(P: "A" | "B") {
     if (it._virtual) { renderSessionOnlyOverview(body, it.session); S.paneItem[P] = it.id; return; }
     const keepTyping = P === S.focused && answerInputFocused() && S.paneItem[P] === it.id;
     if (!keepTyping) { renderOverviewInto(body, it, P); S.paneItem[P] = it.id; }
+    return;
+  }
+  if (view === "chat") {
+    // CHAT view (pane A): the SOUL-voiced gist feed + the reused Overview answer affordances, with
+    // the raw terminal in a collapsible drawer. Don't re-render while the operator is typing (answer
+    // box OR the drawer pty) — a background tick must not blow away half-typed input or blur the pty.
+    if (it._virtual) { renderSessionOnlyOverview(body, it.session); S.paneItem[P] = it.id; return; }
+    const keepTyping = P === S.focused && (answerInputFocused() || drawerTerminalFocused()) && S.paneItem[P] === it.id;
+    if (!keepTyping) { renderChatInto(body, it, P); S.paneItem[P] = it.id; }
     return;
   }
   if (view === "diff") {
@@ -857,13 +982,15 @@ function applyKeyboardTarget() {
   const fv = S.panes[S.focused];
   const term = S.term;
   const inp = document.getElementById("answer-input") as HTMLTextAreaElement | null;
-  if (fv === "terminal") {
+  // The xterm holds the keyboard for a focused terminal pane OR the chat drawer's pty (chat +
+  // drawer-open + chatFocus 'terminal'). Otherwise the answer box owns it for overview/chat in A.
+  if (fv === "terminal" || drawerTerminalFocused()) {
     if (inp) inp.blur();
     try { term && term.focus(); } catch {}
   } else {
-    // A non-terminal view is focused → the xterm must NOT keep keyboard focus.
+    // A non-terminal target is focused → the xterm must NOT keep keyboard focus.
     try { term && term.blur(); } catch {}
-    if (fv === "overview" && S.focused === "A" && inp && !overlayOpen()) inp.focus();
+    if ((fv === "overview" || fv === "chat") && S.focused === "A" && inp && !overlayOpen()) inp.focus();
   }
 }
 
@@ -1769,7 +1896,12 @@ function runMasterCmd(e: KeyboardEvent): boolean {
   switch (k) {
     case "o": setPaneView("A", "overview"); break; // Overview only exists in A
     case "h": setPaneView("A", "html"); break; // FIX O: HTML viz (only if the session has one)
-    case "t": setPaneView(P, "terminal"); break;
+    case "t":
+      // In the chat view, Ctrl+G t toggles the raw-terminal DRAWER (not a full view switch); the
+      // classic full-terminal switch stays for every other case.
+      if (S.panes.A === "chat" && S.focused === "A" && chatEnabled()) toggleTermDrawer();
+      else setPaneView(P, "terminal");
+      break;
     case "d": setPaneView(P, "diff"); break; // NOTE: no "g" alias — it collides with the Ctrl+G master
     case "n": newClaudeTerminal(); break;
     case "m": case "z": // FIX HH: m = fullscreen the FOCUSED pane's current view (any: term/diff/html/overview)
@@ -1859,13 +1991,17 @@ function zoomTermFont(delta: number) {
  *  mounted) — the periodic 2s data refresh must NOT reconcile, re-fit, or touch the live
  *  xterm/WS. We only (re)mount/move/attach on a REAL change, and never fit() from here. */
 function reconcileTerminal() {
-  const target: "A" | "B" | null = S.panes.A === "terminal" ? "A" : S.panes.B === "terminal" ? "B" : null;
   const host = $("term-host");
+  // CHAT DRAWER wins: when pane A shows chat and the drawer is open, the single xterm mounts into the
+  // drawer slot (opening the drawer maximizes A, so pane B's terminal is collapsed → no conflict).
+  const drawerSlot = document.getElementById("chat-drawer-slot");
+  const chatDrawer = S.panes.A === "chat" && S.termDrawerOpen && chatEnabled() && !!drawerSlot;
+  const target: "A" | "B" | null = chatDrawer ? "A" : S.panes.A === "terminal" ? "A" : S.panes.B === "terminal" ? "B" : null;
   if (!target) { if (S.termWs || S.termNative || S.term) teardownTerminal(); host.style.display = "none"; S.termPane = null; return; }
   const it = selectedItem();
   const wantSession = _termOverride != null ? _termOverride : it ? it.session.id : null;
   if (wantSession == null) { host.style.display = "none"; S.termPane = null; return; }
-  const body = $(`pane-${target}-body`);
+  const body = chatDrawer ? (drawerSlot as HTMLElement) : $(`pane-${target}-body`);
   const mountedHere = host.parentElement === body;
   const sameSession = S.termSessionForPane === wantSession && (!!S.termWs || !!S.termNative);
   // Fast path: already showing the right session in the right pane → touch NOTHING.
@@ -4019,15 +4155,17 @@ window.addEventListener("keydown", async (e) => {
   // the keyboard would otherwise be COMPLETELY dead: master skipped here, early-return below
   // swallows the rest. Process the master whenever the xterm does not really own the keys.
   const xtermHasDomFocus = !!(document.activeElement && (document.activeElement as HTMLElement).closest && (document.activeElement as HTMLElement).closest("#term-host"));
-  if (S.panes[S.focused] !== "terminal" || !xtermHasDomFocus) {
+  // The pty owns the keys when a terminal pane is focused OR the chat drawer's pty is focused.
+  const termOwnsKeys = S.panes[S.focused] === "terminal" || drawerTerminalFocused();
+  if (!termOwnsKeys || !xtermHasDomFocus) {
     if (S.leaderActive) { e.preventDefault(); e.stopPropagation(); runMasterCmd(e); return; }
     if (isMasterKey(e)) { e.preventDefault(); e.stopPropagation(); if (!e.repeat) startMaster(); return; }
   }
 
-  // The FOCUSED pane shows the live terminal → xterm owns all OTHER keys. (This early return
-  // is ALSO what lets Ctrl+Z pass through to the PTY as SIGTSTP when the terminal is focused —
-  // the FIX N undo binding below is reached only OUTSIDE the terminal.)
-  if (S.panes[S.focused] === "terminal") return;
+  // The FOCUSED pane shows the live terminal (or the chat drawer pty) → xterm owns all OTHER keys.
+  // (This early return is ALSO what lets Ctrl+Z pass through to the PTY as SIGTSTP when the terminal
+  // is focused — the FIX N undo binding below is reached only OUTSIDE the terminal.)
+  if (termOwnsKeys) return;
 
   // FIX N: Ctrl+Z (or Cmd+Z) = UNDO — same as `u`, the existing undo stack (snooze / complete /
   // feedback / importance / …). Only OUTSIDE the terminal (there Ctrl+Z is SIGTSTP, handled by the

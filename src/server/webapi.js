@@ -135,6 +135,7 @@
     resurfaceAll: () => jpost("/api/resurfaceAll", {}),
     reprioritize: () => jpost("/api/reprioritize", {}),
     sessionPr: (sessionId) => jget("/api/sessionPr/" + sessionId).then((r) => r.pr),
+    gist: (sessionId, force) => jget("/api/gist/" + sessionId + (force ? "?force=1" : "")).then((r) => (r && r.beats) || []),
     mergePr: (sessionId, deleteBranch) => jpost("/api/mergePr", { sessionId, deleteBranch: !!deleteBranch }),
     diag: (payload) => jpost("/api/diag", payload),
     takeOverable: () => jget("/api/takeoverable").then((r) => r.agents),

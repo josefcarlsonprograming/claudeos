@@ -2285,8 +2285,8 @@ async function main() {
     check("FIX LL: focus is reset to default ONLY when not sticking to a terminal", /if \(!stickTerm\) S\.focused = defaultFocus\(it\);/.test(rjs));
     check("FIX LL: _navFocus is set ONLY by explicit nav (selectIndex), never a background tick", /_navScroll = true;[^\n]*\n\s*_navFocus = true;/.test(rjs) && (rjs.match(/_navFocus = true/g) || []).length === 1);
     check("FIX LL: _navFocus is consumed once per render (renderPanes resets it to false)", /applyKeyboardTarget\(\);\s*\n\s*_navFocus = false;/.test(rjs));
-    check("FIX LL: applyKeyboardTarget re-asserts term.focus() when the focused pane is the terminal", /function applyKeyboardTarget[^]*?if \(fv === "terminal"\)[^]*?term && term\.focus\(\)/.test(rjs));
-    check("FIX LL: plain keys (incl ↑/↓) go to the PTY when terminal focused — global handler early-returns", /if \(S\.panes\[S\.focused\] === "terminal"\) return;/.test(rjs));
+    check("FIX LL: applyKeyboardTarget re-asserts term.focus() for a focused terminal pane OR the chat drawer pty", /function applyKeyboardTarget[^]*?if \(fv === "terminal" \|\| drawerTerminalFocused\(\)\)[^]*?term && term\.focus\(\)/.test(rjs));
+    check("FIX LL: plain keys go to the PTY when the terminal (or chat drawer) owns keys — global handler early-returns", /const termOwnsKeys = S\.panes\[S\.focused\] === "terminal" \|\| drawerTerminalFocused\(\);/.test(rjs) && /if \(termOwnsKeys\) return;/.test(rjs));
     check("FIX LL: no active auto-open path steals focus (autoOpened set is unused / never auto-attaches)", !/autoOpened\.add\(|autoOpened\.has\(/.test(rjs));
     // FIX L: open-terminal bumps task to top (active boost) + nav-stuck fix.
     check("FIX L1: active task floats to top via queue-time reposition (highest organic + ACTIVE_OVER), not a flat 50k base", fs.readFileSync(path.resolve(__dirname, "../../src/core/priority.ts"), "utf8").includes("ACTIVE_OVER") && /maxOrganic \+ ACTIVE_OVER/.test(fs.readFileSync(path.resolve(__dirname, "../../src/core/engine.ts"), "utf8")));
@@ -2300,7 +2300,7 @@ async function main() {
     check("FIX M1: virtual item renders minimal overview (both panes = same opened session)", /it\._virtual\) \{ renderSessionOnlyOverview\(body, it\.session\)/.test(rjs));
     check("FIX M2: terminal-size diagnostics log container/propose/cols (console + footer)", rjs.includes("function termSizeDiag") && rjs.includes("proposeDimensions") && rjs.includes("paneB") && /host \$\{cw\}×\$\{ch\}/.test(rjs) && rjs.includes('termSizeDiag("open")'));
     // FIX N: Ctrl+Z = undo, but ONLY outside the terminal (terminal Ctrl+Z = SIGTSTP passthrough).
-    check("FIX N: Ctrl/Cmd+Z triggers undo (doUndo), placed AFTER the terminal early-return", /if \(S\.panes\[S\.focused\] === "terminal"\) return;[^]*?\(e\.ctrlKey \|\| e\.metaKey\)[^]*?e\.key === "z"[^]*?doUndo\(\)/.test(rjs));
+    check("FIX N: Ctrl/Cmd+Z triggers undo (doUndo), placed AFTER the terminal early-return", /if \(termOwnsKeys\) return;[^]*?\(e\.ctrlKey \|\| e\.metaKey\)[^]*?e\.key === "z"[^]*?doUndo\(\)/.test(rjs));
     check("FIX N: Ctrl+Z undo is suppressed while typing in the answer box (native textarea undo)", /e\.key === "z" \|\| e\.key === "Z"\) && !answerInputFocused\(\)/.test(rjs));
     check("FIX N: undo_alt bound to C-z in keymap (u still works)", JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../config/keymap.json"), "utf8")).undo_alt === "C-z");
     // FIX P: dismiss stamps dismissed_at (not completed_at); surface re-opens on fresh activity.
@@ -2417,12 +2417,12 @@ async function main() {
     check("MERGED-STATE: diff-toolbar Merge control hidden when merged", rjs.includes("diff-merge-wrap-") && /mergeWrap\.style\.display = isMerged \? "none" : ""/.test(rjs));
     check("MERGED-STATE: merged styling present in CSS", fs.readFileSync(path.resolve(__dirname, "../../src/renderer/styles.css"), "utf8").includes(".pr-merged-badge") && fs.readFileSync(path.resolve(__dirname, "../../src/renderer/styles.css"), "utf8").includes(".pr-bar-merged"));
     check("FIX X: pr_merge_strategy config (default squash, never auto-merge)", JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../config/weights.json"), "utf8")).pr_merge_strategy === "squash" && fs.readFileSync(path.resolve(__dirname, "../../src/core/config.ts"), "utf8").includes("pr_merge_strategy"));
-    // STANDARD LAYOUT (operator request 2026-06-11): EVERY task lands Overview (A) | Terminal (B)
-    // — PR/review included. Diff/HTML live in the DETACHED detail window or behind a manual
-    // switch (o/h/t/d). Explicit nav resets BOTH panes (a manual choice never leaks into the next
-    // task) and an html that already existed on arrival never auto-hijacks pane A.
-    check("standard layout: paneDefault is ALWAYS Overview (A) | Terminal (B), even for PR/review", rjs.includes('return P === "A" ? "overview" : "terminal";'));
-    check("standard layout: explicit nav clears BOTH manual pane flags (no leak across tasks)", /if \(_navFocus\) \{ S\.paneManual\.A = false; S\.paneManual\.B = false; \}/.test(rjs));
+    // CHAT LAYOUT: a normal Claude task lands Chat (A) | Terminal (B) — the SOUL-voiced gist is the
+    // front view; PR/kanban and chat-disabled keep Overview. Diff/HTML live in the DETACHED detail
+    // window or behind a manual switch (o/h/t/d). Explicit nav resets BOTH panes (a manual choice
+    // never leaks into the next task) and an html that already existed on arrival never hijacks pane A.
+    check("chat layout: paneDefault A is Chat for a chattable task (Terminal for B)", rjs.includes('return chatEnabled() && isChattable(it) ? "chat" : "overview";') && /if \(P === "B"\) return "terminal";/.test(rjs));
+    check("chat layout: explicit nav clears BOTH manual pane flags (no leak across tasks)", /if \(_navFocus\) \{[^]*?S\.paneManual\.A = false; S\.paneManual\.B = false;/.test(rjs));
     check("standard layout: task-change pre-seeds autoVized (pre-existing html can't hijack pane A)", /S\.autoVized\.add\(`\$\{it\.session\.id\}:\$\{viz0\.length\}`\)/.test(rjs));
     check("0cc9197: paneDefault A never branches on task html / PR — Overview wins unconditionally", !/paneDefault[^]*?sessionVizFor\(it\.session\.id\)\.length\) return "html"/.test(rjs));
     check("0cc9197: openTerminalView seeds pane A = Overview (Diff/HTML live in the detached window)", rjs.includes('S.panes.A = "overview"'));
