@@ -105,7 +105,7 @@ export interface CockpitState {
   dreams: { ran_at: string; summary: string }[];
   demo: boolean; // true => safe sandbox; UI shows a "nothing is real" banner
   undo: { available: boolean; label: string; count: number }; // most-recent reversible action
-  config: { build?: string; terminal_poll_ms: number; terminal_font_size: number; auto_open_terminal_on_complex: boolean; auto_diff_on_pr_review: boolean; auto_html_on_viz: boolean; sessions_repos: string[]; pane_a_frac_default: number; pane_a_frac_pr: number }; // UI-facing knobs
+  config: { build?: string; terminal_poll_ms: number; terminal_font_size: number; auto_open_terminal_on_complex: boolean; auto_diff_on_pr_review: boolean; auto_html_on_viz: boolean; sessions_repos: string[]; pane_a_frac_default: number; pane_a_frac_pr: number; chat_enabled?: boolean }; // UI-facing knobs
   learning: {
     weights: { key: string; base: number; delta: number; effective: number }[]; // base + learned
     examples: any[]; // recent training examples (state/predicted/correct)
@@ -144,6 +144,17 @@ export class Controller {
   /** Full snapshot for rendering. The first queue entry IS the recommended next action. */
   state(): CockpitState {
     const queue = this.engine.queue();
+    // Attach the SOUL-voiced gist (highlights of the session's conversation) to each item, for the
+    // chat view. Cheap: a Map lookup of the beats the tick already computed (no model call here).
+    if ((this.cfg as any).chat?.enabled !== false) {
+      try {
+        const { cachedGist } = require("./gist");
+        for (const q of queue) {
+          const g = cachedGist(q.session_id);
+          if (g && g.beats && g.beats.length) (q as any).gist = g.beats;
+        }
+      } catch {}
+    }
     const surfacedIds = new Set(queue.map((q) => q.session_id));
     const nowMs = Date.now();
     const sessions = this.sessions.list()
@@ -185,6 +196,7 @@ export class Controller {
         sessions_repos: this.cfg.sessions_repos,
         pane_a_frac_default: this.cfg.pane_a_frac_default,
         pane_a_frac_pr: this.cfg.pane_a_frac_pr,
+        chat_enabled: (this.cfg as any).chat?.enabled !== false, // renderer uses chat as the Pane A default when on
       },
       learning: (() => {
         const learned = getLearnedWeights(this.db);
@@ -1043,6 +1055,49 @@ export class Controller {
     } catch {
       return "(could not render transcript)";
     }
+  }
+
+  /** The SOUL-voiced gist (chat highlights) for a session — cached on transcript mtime; ?force
+   *  regenerates. Reads only the transcript TAIL (never the whole 20MB file). Used by /api/gist
+   *  for an on-demand refresh (e.g. a WORKING session the tick hasn't enriched). */
+  async gistForSession(sessionId: number, force = false): Promise<{ beats: { kind: string; text: string }[] }> {
+    if ((this.cfg as any).chat?.enabled === false) return { beats: [] };
+    const s = this.getSession(sessionId);
+    if (!s) return { beats: [] };
+    const tPath = this.sessions.transcriptFor(s);
+    const fs = require("fs");
+    let mtimeMs = 0;
+    let conversation = "";
+    if (tPath && fs.existsSync(tPath)) {
+      try {
+        mtimeMs = fs.statSync(tPath).mtimeMs;
+        const { parseTranscriptTail } = require("./transcript");
+        const view = await parseTranscriptTail(tPath, mtimeMs);
+        conversation = view?.raw || "";
+      } catch {}
+    }
+    // Pull the latest pending item for the question / last_prompt / category, if any.
+    const it = this.db
+      .prepare("SELECT * FROM items WHERE session_id=? AND status='pending' ORDER BY id DESC LIMIT 1")
+      .get(sessionId) as any;
+    const chat = (this.cfg as any).chat || {};
+    const { refreshGist } = require("./gist");
+    const input = {
+      sessionId,
+      title: (s as any).manual_title || (s as any).clean_title || s.title,
+      state: ((s as any).manual_state || s.state || "UNKNOWN"),
+      category: it?.category ?? null,
+      question: it?.question ?? "",
+      conversation,
+      lastPrompt: it?.last_prompt ?? "",
+      model: chat.gist_model || this.cfg.models.triage,
+      maxBeats: chat.gist_max_beats || 6,
+    };
+    // In the demo sandbox, never spawn a real `claude` (would add seconds/flakiness) — a null gen
+    // makes generateGist fall back deterministically. The real instance uses the model.
+    const opts: any = { db: this.db, force };
+    if (this.demo) opts.gen = async () => null;
+    return await refreshGist(input, String(mtimeMs), opts);
   }
 
   attachCommand(sessionId: number): string {

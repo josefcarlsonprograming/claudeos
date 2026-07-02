@@ -149,18 +149,43 @@ async function run() {
     check("landing on a plain task focuses pane B", focusedB);
     const badge = await page.locator("#pane-B-actions").innerText().catch(() => "");
     check("the focus badge says typing goes to the terminal", /terminal/i.test(badge), badge);
-    // STANDARD LAYOUT: a REVIEW task ALSO lands Overview | Terminal now (diff is a manual
-    // switch / the detached detail window) → pane B is terminal and gets the focus too.
+    // CHAT LAYOUT: a normal Claude task lands Chat (A) | Terminal (B) now — the SOUL-voiced gist is
+    // the front view; the terminal still gets the keyboard (terminal-first) and diff is a manual switch.
     await selectRow("importer");
     const reviewLayout = await waitFor(async () =>
       page.evaluate(() => {
         const active = (P: string) =>
           (document.querySelector(`.pane-tabs[data-tabs="${P}"] .tab.active`) as HTMLElement | null)?.dataset.mode;
-        return active("A") === "overview" && active("B") === "terminal";
+        return active("A") === "chat" && active("B") === "terminal";
       }), 5000);
     const focusedB2 = await waitFor(async () =>
       page.evaluate(() => document.querySelector("#pane-B")?.classList.contains("focused") === true), 5000);
-    check("a review task also lands Overview | Terminal and focuses pane B", reviewLayout && focusedB2);
+    check("a task lands Chat | Terminal and focuses pane B", reviewLayout && focusedB2);
+  });
+
+  // ── CHAT view: SOUL-voiced gist feed + collapsible terminal drawer ──────────
+  await section("Chat view: SOUL gist feed renders, and Ctrl+G t toggles the terminal drawer", async () => {
+    await selectRow("gzip"); // a normal Claude task → pane A defaults to Chat
+    const chatActive = await waitFor(async () =>
+      page.evaluate(() => (document.querySelector('.pane-tabs[data-tabs="A"] .tab.active') as HTMLElement | null)?.dataset.mode === "chat"), 5000);
+    check("a Claude task lands with pane A = Chat", chatActive);
+    // beats arrive either on the item (tick cache) or via the on-demand /api/gist fetch
+    const beats = await waitFor(async () => (await page.locator("#chat-gist .gist-beat").count()) > 0, 8000);
+    check("the chat feed renders SOUL-voiced gist beats", beats);
+    // focus pane A, then Ctrl+G t opens the drawer and mounts the SINGLE #term-host into it
+    await focusA();
+    await master("t");
+    const opened = await waitFor(async () =>
+      page.evaluate(() => {
+        const d = document.getElementById("chat-term-drawer");
+        const host = document.getElementById("term-host");
+        return !!d && d.dataset.open === "true" && !!host && d.contains(host);
+      }), 6000);
+    check("Ctrl+G t opens the drawer and re-parents the single terminal into it", opened);
+    await master("t"); // toggle back
+    const closed = await waitFor(async () =>
+      page.evaluate(() => document.getElementById("chat-term-drawer")?.dataset.open === "false"), 5000);
+    check("Ctrl+G t again collapses the drawer", closed);
   });
 
   // ── keyboard navigation ──────────────────────────────────────────────────
@@ -953,9 +978,9 @@ async function run() {
     const reset = await waitFor(async () =>
       page.evaluate(() => {
         const S = (window as any).cockpitS;
-        return S.panes.A === "overview" && S.panes.B === "terminal" && !S.paneManual.A && !S.paneManual.B;
+        return S.panes.A === "chat" && S.panes.B === "terminal" && !S.paneManual.A && !S.paneManual.B;
       }), 5000);
-    check("the next task lands on the default Overview | Terminal (manual flags cleared)", reset);
+    check("the next task lands on the default Chat | Terminal (manual flags cleared)", reset);
   });
 
   await section("Standard layout: pre-existing html never hijacks pane A; a NEW html still auto-opens", async () => {
@@ -987,7 +1012,7 @@ async function run() {
       const htmlTab = document.querySelector('.pane-tabs[data-tabs="A"] .tab-html') as HTMLElement | null;
       return { paneA: S.panes.A, tabShown: !!htmlTab && htmlTab.style.display !== "none" };
     });
-    check("landing on a task with a pre-existing html keeps pane A = Overview", landed.paneA === "overview", JSON.stringify(landed));
+    check("landing on a task with a pre-existing html keeps pane A = Chat (default)", landed.paneA === "chat", JSON.stringify(landed));
     check("\u2026while the HTML tab IS offered (the renderer does know about the viz)", landed.tabShown, JSON.stringify(landed));
     // 3. a NEW html written WHILE the task is in view must still auto-open (auto_html_on_viz)
     fsx.writeFileSync(pathx.join(folder, "report2.html"), "<html><body>new viz</body></html>");

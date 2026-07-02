@@ -90,6 +90,15 @@ export interface FullConfig {
   pane_a_frac_default: number; // default A|B split (Pane A share) for normal/question tasks
   pane_a_frac_pr: number; // default A|B split for PR/review tasks (narrower Overview, wider Diff)
   soul_source?: { repo: string; path: string }; // canonical SOUL.md source in the CRM repo (git sync)
+  chat: ChatConfig; // the SOUL-voiced gist/chat interface (per-task feed + terminal drawer)
+}
+
+/** The chat/gist interface (Pane A "chat" view). The gist is a short, SOUL-voiced highlights feed
+ *  of a session's conversation; the raw terminal is a collapsible drawer behind it. */
+export interface ChatConfig {
+  enabled: boolean;      // master switch — off → the renderer keeps Overview as the Pane A default (dark-launch)
+  gist_model: string;    // model that distills the transcript tail into beats (cheap; defaults to models.triage)
+  gist_max_beats: number;// cap on how many highlight beats a gist holds
 }
 
 export type Keymap = Record<string, string>;
@@ -178,6 +187,11 @@ export function loadConfig(): FullConfig {
       raw.soul_source && typeof raw.soul_source === "object" && raw.soul_source.repo && raw.soul_source.path
         ? { repo: String(raw.soul_source.repo), path: String(raw.soul_source.path) }
         : undefined,
+    chat: {
+      enabled: raw.chat?.enabled !== false, // default ON
+      gist_model: typeof raw.chat?.gist_model === "string" ? raw.chat.gist_model : (raw.models?.triage || "haiku"),
+      gist_max_beats: typeof raw.chat?.gist_max_beats === "number" ? raw.chat.gist_max_beats : 6,
+    },
   };
 }
 

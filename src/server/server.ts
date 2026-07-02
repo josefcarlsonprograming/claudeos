@@ -300,6 +300,14 @@ const server = http.createServer(async (req, res) => {
       const pr = await ctrl.refreshSessionPr(sid);
       return send(res, 200, { pr: pr || null });
     }
+    if (p.startsWith("/api/gist/")) {
+      // The SOUL-voiced chat gist (highlights) for a session; cached on transcript mtime, ?force=1
+      // regenerates. Lazy — the tick already computes gists for ready items; this covers on-demand
+      // refresh (e.g. a WORKING session opened in the chat view).
+      const sid = numId(p.slice("/api/gist/".length));
+      if (sid == null) return send(res, 400, { error: "bad sessionId" });
+      return send(res, 200, await ctrl.gistForSession(sid, url.searchParams.get("force") === "1"));
+    }
     if (p.startsWith("/api/prConversation/")) {
       // PR-CONV: PR meta + review runs + conversation timeline (45s server cache; ?force=1 from
       // the ↻ button bypasses it). Lazy — called when the diff view opens, never from the tick loop.

@@ -1542,6 +1542,28 @@ export class Engine {
             `UPDATE items SET category=?, category_source=?, one_liner=?, context=?, prompt_summary=?, suggested_answer=?, diff_summary=?, importance=?, importance_reason=?, answer_options=?, enriched=1, priority=?, priority_explain=?, updated_at=datetime('now') WHERE signature=?`
           )
           .run(cat, "claude", out.one_liner, out.context, out.prompt_summary, out.suggested_answer, out.diff_summary, out.importance, out.importance_reason, answerOptions, score, explain, sig);
+        // SOUL-voiced gist for the chat view — fire-and-forget, cached on the ready-turn signature
+        // (so a parked session costs zero model calls), best-effort (never blocks/fails the tick).
+        // Skip FYI_DONE here to preserve the FYI cost discipline (enrich_fyi_with_model): the chat
+        // view still fetches a gist on-demand via /api/gist the moment such a card is opened.
+        if ((this.cfg as any).chat?.enabled !== false && cat !== "FYI_DONE") {
+          const { refreshGist } = require("./gist");
+          void refreshGist(
+            {
+              sessionId: s.id,
+              title: s.title,
+              state,
+              category: cat,
+              question: questionText,
+              conversation: view?.raw || "",
+              lastPrompt,
+              model: (this.cfg as any).chat?.gist_model || this.cfg.models.triage,
+              maxBeats: (this.cfg as any).chat?.gist_max_beats || 6,
+            },
+            sig,
+            { db: this.db }
+          ).catch(() => {});
+        }
       } catch {
         /* leave placeholder; a later tick retries (enriched still 0) */
       } finally {

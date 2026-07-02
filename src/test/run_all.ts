@@ -20,6 +20,7 @@ const SUITES: [string, string][] = [
   ["transcript prompt extraction ('You asked' skips injected turns)", "transcript_prompt_test.js"],
   ["answer-feedback loop", "answer_feedback_test.js"],
   ["SOUL + reflect loop (persona sync · ANSWERING evolve · skills)", "soul_reflect_test.js"],
+  ["gist + chat_log (SOUL-voiced highlights · conversation log)", "gist_test.js"],
   ["overview metrics (this-session stats)", "metrics_test.js"],
   ["terminal size (new-terminal window sizing, real tmux)", "terminal_size_test.js"],
   ["terminal mode replay (scroll survives pty reuse)", "termmodes_test.js"],

@@ -299,6 +299,24 @@ function migrate(db: DatabaseSync): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Conversation / gist log. Every SOUL-voiced gist beat, every chat message (per-task
+    -- and the global cockpit thread), and — from Stage 2 — every prompt+response sent to
+    -- the claude CLI. This is the durable record the operator reviews to "see what happens":
+    -- what was asked, in his voice, and where Claude's draft diverged from what he'd say.
+    -- Append-only + best-effort (a logging failure must never break a model call or an action).
+    CREATE TABLE IF NOT EXISTS chat_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope TEXT,                    -- 'task' | 'global'
+      session_id INTEGER,            -- nullable (the global cockpit thread has none)
+      item_id INTEGER,               -- nullable
+      role TEXT NOT NULL,            -- 'user' | 'assistant' | 'gist' | 'system'
+      content TEXT,                  -- the beat text / message / model response
+      prompt TEXT,                   -- the full prompt sent to claude -p (nullable)
+      persona_snapshot TEXT,         -- personaBlock() at send time (nullable, auditable)
+      model TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     -- Singleton key/value bag for small engine bookkeeping (e.g. last_auto_launch_at,
     -- the kanban auto-launch cooldown timestamp). One row per key.
     CREATE TABLE IF NOT EXISTS meta (
@@ -384,6 +402,9 @@ function migrate(db: DatabaseSync): void {
   // Throughput stats sort completions on every /api/state and the sessions table only grows
   // (completed rows are kept); index keeps the ORDER BY completed_at cheap at scale.
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_completed_at ON sessions(completed_at) WHERE completed_at IS NOT NULL;"); } catch {}
+  // The log viewer + gist cache read chat_log newest-first, filtered by scope/session; index both.
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_chat_log_scope_created ON chat_log(scope, created_at);"); } catch {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_chat_log_session_created ON chat_log(session_id, created_at);"); } catch {}
 
   // FIX BB: explicit reasoned-priority feedback columns on training_examples.
   for (const col of ["reason TEXT", "source TEXT", "weight REAL NOT NULL DEFAULT 1"]) {
@@ -908,6 +929,76 @@ export function reconcileMergedPr(
     return { action: "untagged", prev };
   }
   return { action: "none" };
+}
+
+// ---- chat_log: gist beats / chat messages / logged prompts (the conversation record) ----
+export type ChatScope = "task" | "global";
+export type ChatRole = "user" | "assistant" | "gist" | "system";
+
+export interface ChatLogInput {
+  scope: ChatScope;
+  role: ChatRole;
+  content?: string | null;
+  sessionId?: number | null;
+  itemId?: number | null;
+  prompt?: string | null;
+  personaSnapshot?: string | null;
+  model?: string | null;
+}
+
+export interface ChatLogRow {
+  id: number;
+  scope: string | null;
+  session_id: number | null;
+  item_id: number | null;
+  role: string;
+  content: string | null;
+  prompt: string | null;
+  persona_snapshot: string | null;
+  model: string | null;
+  created_at: string;
+}
+
+/** Append one row to chat_log. Best-effort: a logging failure must never break the caller. */
+export function logChat(db: DatabaseSync, e: ChatLogInput): number {
+  try {
+    const r = db
+      .prepare(
+        `INSERT INTO chat_log (scope, session_id, item_id, role, content, prompt, persona_snapshot, model)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        e.scope,
+        e.sessionId ?? null,
+        e.itemId ?? null,
+        e.role,
+        e.content ?? null,
+        e.prompt ?? null,
+        e.personaSnapshot ?? null,
+        e.model ?? null
+      );
+    return Number(r.lastInsertRowid);
+  } catch {
+    return 0;
+  }
+}
+
+/** Recent chat_log rows, newest-first, optionally filtered by scope and/or session. */
+export function recentChat(
+  db: DatabaseSync,
+  opts: { scope?: ChatScope; sessionId?: number; roles?: ChatRole[]; limit?: number } = {}
+): ChatLogRow[] {
+  const where: string[] = [];
+  const args: any[] = [];
+  if (opts.scope) { where.push("scope = ?"); args.push(opts.scope); }
+  if (typeof opts.sessionId === "number") { where.push("session_id = ?"); args.push(opts.sessionId); }
+  if (opts.roles && opts.roles.length) {
+    where.push(`role IN (${opts.roles.map(() => "?").join(",")})`);
+    args.push(...opts.roles);
+  }
+  const limit = Math.max(1, Math.min(500, opts.limit ?? 100));
+  const sql = `SELECT * FROM chat_log ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY id DESC LIMIT ?`;
+  return db.prepare(sql).all(...args, limit) as unknown as ChatLogRow[];
 }
 
 export function pruneClosedPrs(db: DatabaseSync, openKeys: Set<string>, scannedRepos?: string[]): void {

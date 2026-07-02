@@ -29,6 +29,8 @@
   "default_base_branch": "main",
   "_soul_source_comment": "Canonical SOUL.md lives in the CRM (Jarvis voice-learner distills it nightly from real emails + calls). The nightly dream pulls it read-only via `gh api repos/<repo>/contents/<path>` into config/SOUL.md. Best-effort: if gh is missing/unauthed/offline, the last synced copy is kept. Requires gh authed to the (private) CRM repo on the server.",
   "soul_source": { "repo": "josefcarlsonprograming/BioSonic-CRM", "path": "agent/SOUL.md" },
+  "_chat_comment": "The SOUL-voiced chat/gist interface: the front of each task is a short highlights feed of the session's conversation (in the operator's voice), with the raw terminal a collapsible drawer behind it. enabled:false dark-launches it (renderer keeps Overview as the default). gist_model distills the transcript tail; defaults to models.triage.",
+  "chat": { "enabled": true, "gist_model": "haiku", "gist_max_beats": 6 },
   "_pane_widths_comment": "Default A|B split fraction (Pane A share) per task mode. PR/review tasks (Pane B = Diff) want a wider diff, so Overview is narrower. Operator drags override per-mode and persist.",
   "pane_a_frac_default": 0.4,
   "pane_a_frac_pr": 0.3,
