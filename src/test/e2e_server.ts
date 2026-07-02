@@ -60,8 +60,8 @@ async function run(srv: DemoServer) {
   check("/api/attach?sessionId returns a command field", "command" in (await getJson(`/api/attach?sessionId=${firstSid}`)));
   check("/api/sessionPr/<id> returns {pr}", "pr" in (await getJson(`/api/sessionPr/${firstSid}`)));
   const gistResp = await getJson(`/api/gist/${firstSid}`);
-  check("/api/gist/<id> returns a beats[] array", Array.isArray(gistResp.beats));
-  check("/api/gist/<id> beats are {kind,text} shaped (or empty)", gistResp.beats.every((b: any) => b && typeof b.text === "string" && (b.kind === "beat" || b.kind === "ask")));
+  check("/api/gist/<id> returns a {summary,suggestions}", typeof gistResp.summary === "string" && Array.isArray(gistResp.suggestions));
+  check("/api/gist/<id> summary is non-empty + suggestions are strings", gistResp.summary.length > 0 && gistResp.suggestions.every((s: any) => typeof s === "string"));
   check("GET /api/gist/abc → 400 (bad sessionId)", (await get("/api/gist/abc")).status === 400);
   check("GET /api/chat-log returns rows[]", Array.isArray((await getJson("/api/chat-log?limit=5")).rows));
   const cc = await post("/api/cockpit-chat", { message: "what needs me?" });

@@ -135,7 +135,7 @@
     resurfaceAll: () => jpost("/api/resurfaceAll", {}),
     reprioritize: () => jpost("/api/reprioritize", {}),
     sessionPr: (sessionId) => jget("/api/sessionPr/" + sessionId).then((r) => r.pr),
-    gist: (sessionId, force) => jget("/api/gist/" + sessionId + (force ? "?force=1" : "")).then((r) => (r && r.beats) || []),
+    gist: (sessionId, force) => jget("/api/gist/" + sessionId + (force ? "?force=1" : "")),
     cockpitChat: (message, history) => jpost("/api/cockpit-chat", { message, history: history || [] }),
     sessionSay: (sessionId, text) => jpost("/api/sessionSay", { sessionId, text }),
     chatLog: (opts) => { const o = opts || {}; const q = []; if (o.scope) q.push("scope=" + o.scope); if (o.sessionId != null) q.push("sessionId=" + o.sessionId); if (o.limit) q.push("limit=" + o.limit); return jget("/api/chat-log" + (q.length ? "?" + q.join("&") : "")).then((r) => (r && r.rows) || []); },

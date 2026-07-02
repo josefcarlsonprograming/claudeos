@@ -663,31 +663,33 @@ function chatSolo(): boolean {
   return chatEnabled() && S.panes.A === "chat" && !S.fullPane && !S.paneManual.B;
 }
 
-// ---------- CHAT view: SOUL-voiced gist feed + the collapsible raw-terminal drawer ----------
-// The gist beats arrive on the queue item (it.gist) from the tick; for a session the tick hasn't
-// gisted yet (e.g. WORKING) we lazily fetch /api/gist and cache it here so the feed fills in.
+// ---------- CHAT view: ONE friendly co-worker summary + suggested replies + terminal drawer ----------
+// The gist ({summary, suggestions}) arrives on the queue item (it.gist) from the tick; for a session
+// the tick hasn't gisted yet we lazily fetch /api/gist and cache it here so the view fills in.
+interface GistObj { summary: string; suggestions: string[] }
 const _gistFetching = new Set<number>();
-const _gistCacheR: Record<number, { kind: string; text: string }[]> = {};
-function beatsFor(it: any): { kind: string; text: string }[] {
-  if (Array.isArray(it.gist) && it.gist.length) return it.gist;
-  return _gistCacheR[it.session.id] || [];
+const _gistCacheR: Record<number, GistObj> = {};
+function gistOf(it: any): GistObj | null {
+  if (it.gist && typeof it.gist === "object" && typeof it.gist.summary === "string") return it.gist;
+  return _gistCacheR[it.session.id] || null;
 }
 function maybeFetchGist(sid: number) {
   if (!sid || _gistFetching.has(sid) || _gistCacheR[sid] || !api.gist) return;
   _gistFetching.add(sid);
-  api.gist(sid).then((beats: any) => {
+  api.gist(sid).then((g: any) => {
     _gistFetching.delete(sid);
-    if (Array.isArray(beats) && beats.length) { _gistCacheR[sid] = beats; render(); }
+    if (g && typeof g.summary === "string" && g.summary) { _gistCacheR[sid] = g; render(); }
   }).catch(() => { _gistFetching.delete(sid); });
 }
 function renderGistBeats(host: HTMLElement, it: any) {
-  const beats = beatsFor(it);
-  host.dataset.beats = String(beats.length);
+  const g = gistOf(it);
+  host.dataset.beats = g ? "1" : "0";
   const sent = _taskSent[it.session.id] || [];
-  let html = beats.length
-    ? beats.map((b) => `<div class="gist-beat" data-kind="${b.kind === "ask" ? "ask" : "beat"}">${esc(b.text || "")}</div>`).join("")
+  // ONE friendly co-worker message (what's done + what's needed), in the operator's voice.
+  let html = g && g.summary
+    ? `<div class="gist-beat gist-summary">${esc(g.summary)}</div>`
     : `<div class="gist-empty">catching up on the conversation…</div>`;
-  if (!beats.length) maybeFetchGist(it.session.id);
+  if (!g) maybeFetchGist(it.session.id);
   // The operator's own messages to this session (written to the terminal), newest last.
   html += sent.map((m) => `<div class="gist-beat gist-you">${esc(m.text)}</div>`).join("");
   // Working indicator: after you send, show a live "…" until the session's reply lands (or times out).
@@ -764,9 +766,13 @@ function renderChatInto(el: HTMLElement, it: any, P: "A" | "B") {
   const prevVal = prevInp ? prevInp.value : "";
   const prevSel = prevInp ? prevInp.selectionStart : null;
   const recap = (it.context && it.context.trim()) || it.one_liner || "";
-  const opts = isAnswerable(it) ? optionsFor(it) : [];
-  const chips = opts.length
-    ? `<div class="chat-chips">` + opts.map((o, i) => `<button class="chat-chip" data-opt="${i}" title="${esc(o.text)}">${esc(o.text.length > 90 ? o.text.slice(0, 88) + "…" : o.text)}</button>`).join("") + `</div>`
+  // Suggested replies come from the gist (friendly one-tap answers for ANY session); fall back to
+  // the classic ABC options if the gist hasn't produced suggestions yet.
+  const g = gistOf(it);
+  const sugg = (g && Array.isArray(g.suggestions) && g.suggestions.length) ? g.suggestions
+    : (isAnswerable(it) ? optionsFor(it).map((o) => o.text) : []);
+  const chips = sugg.length
+    ? `<div class="chat-chips">` + sugg.slice(0, 4).map((t, i) => `<button class="chat-chip" data-opt="${i}" title="${esc(t)}">${esc(t.length > 90 ? t.slice(0, 88) + "…" : t)}</button>`).join("") + `</div>`
     : "";
   el.innerHTML =
     `<div class="chat-scroll">` +
@@ -777,9 +783,9 @@ function renderChatInto(el: HTMLElement, it: any, P: "A" | "B") {
     `<div class="answer-row"><textarea id="answer-input" class="answer-input" rows="1" placeholder="message this session — Enter send · Ctrl+Enter newline"></textarea></div>`;
   const gistHost = el.querySelector("#chat-gist") as HTMLElement | null;
   if (gistHost) renderGistBeats(gistHost, it);
-  // ABC chips send as a chat message (writes to the session; stays on the task).
+  // Suggested-reply chips send as a chat message (writes to the session; stays on the task).
   el.querySelectorAll(".chat-chip").forEach((ch) =>
-    ch.addEventListener("click", () => { const i = parseInt((ch as HTMLElement).dataset.opt!, 10); if (opts[i]) void sendChatMessage(it, opts[i].text); }));
+    ch.addEventListener("click", () => { const i = parseInt((ch as HTMLElement).dataset.opt!, 10); if (sugg[i]) void sendChatMessage(it, sugg[i]); }));
   el.appendChild(chatDrawerEl()); // persistent — #term-host mounts into its slot when the drawer opens
   const inp = el.querySelector("#answer-input") as HTMLTextAreaElement | null;
   if (inp) {
@@ -800,7 +806,7 @@ async function sendChatMessage(it: any, text: string) {
   text = (text || "").trim();
   if (!text) return;
   const sid = it.session.id;
-  const baseSig = JSON.stringify(beatsFor(it)); // remember the summary BEFORE, to detect the reply
+  const baseSig = (gistOf(it)?.summary) || ""; // remember the summary BEFORE, to detect the reply
   (_taskSent[sid] ||= []).push({ role: "you", text });
   const inp = document.getElementById("answer-input") as HTMLTextAreaElement | null;
   if (inp) inp.value = "";
@@ -832,25 +838,23 @@ function pollForReply(sid: number) {
     if (!_taskWaiting[sid]) return;
     try { await refresh(); } catch {}          // cheap: tick may have regenerated the gist
     // Force a fresh summary each tick while waiting (a handful of haiku calls per exchange).
-    let changed = false;
     if (api.gist) {
-      try { const b = await api.gist(sid, true); if (Array.isArray(b) && b.length) { _gistCacheR[sid] = b; } } catch {}
+      try { const g = await api.gist(sid, true); if (g && typeof g.summary === "string" && g.summary) { _gistCacheR[sid] = g; } } catch {}
     }
-    const cur = JSON.stringify(_gistCacheR[sid] || beatsForSid(sid));
-    changed = cur !== w.baseSig && cur !== "[]" && cur !== "undefined";
+    const cur = summaryForSid(sid);
     // Clear on a changed summary, or after ~16s (a trivial reply may not move the summary — don't
     // spin forever), whichever comes first. Always show the freshest summary when clearing.
-    if (changed) return done("the session replied");
+    if (cur && cur !== w.baseSig) return done("the session replied");
     if (w.poll >= 4) return done("delivered — summary is up to date");
     pollForReply(sid);
   }, 4000);
 }
-/** Current beats for a session id (from the live state or the local fetch cache). */
-function beatsForSid(sid: number): any[] {
-  if (_gistCacheR[sid]) return _gistCacheR[sid];
+/** Current summary text for a session id (from the local fetch cache or the live state). */
+function summaryForSid(sid: number): string {
+  if (_gistCacheR[sid]?.summary) return _gistCacheR[sid].summary;
   const q = (S.state && S.state.queue) || [];
   const it = q.find((x: any) => x.session_id === sid);
-  return (it && Array.isArray(it.gist)) ? it.gist : [];
+  return (it && it.gist && typeof it.gist.summary === "string") ? it.gist.summary : "";
 }
 
 /** Master pane render. Detects a task change → resets non-manually-overridden panes to
