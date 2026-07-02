@@ -704,3 +704,10 @@ body.demo header { border-bottom: 1px solid #6b5520; }
 .cc-input-row { border-top: 1px solid var(--border); padding: 8px; }
 .cc-input { width: 100%; box-sizing: border-box; resize: none; background: var(--panel2); color: var(--ink); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13px; max-height: 120px; }
 .cc-input:focus { outline: none; border-color: var(--accent); }
+
+/* Chat-as-terminal-replacement: recap header, your sent bubbles, ABC quick-reply chips */
+.chat-recap { color: var(--dim); font-size: 12px; line-height: 1.5; white-space: pre-wrap; padding: 2px 2px 10px; border-bottom: 1px dashed var(--border); margin-bottom: 10px; }
+.gist-beat.gist-you { align-self: flex-end; background: var(--accent); color: #04121f; border-color: var(--accent); }
+.chat-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px 0; }
+.chat-chip { background: var(--panel2); border: 1px solid var(--border); color: var(--ink); border-radius: 999px; padding: 5px 11px; font: inherit; font-size: 12px; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-chip:hover { border-color: var(--accent); color: var(--accent); }
