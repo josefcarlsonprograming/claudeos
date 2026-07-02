@@ -51,13 +51,16 @@ function firstSentence(s: string, max = 160): string {
  *  restates the state + the question + the tail of the conversation — never invents progress. */
 export function gistFallback(input: GistInput): GistOutput {
   const beats: Beat[] = [];
-  // A single "what happened" beat from the tail of the conversation, if we have any.
+  // A single "what happened" beat from the tail of the conversation. The conversation is raw JSONL,
+  // so only use it if the tail reads as prose — never dump `{"type":...}` machinery as a "beat"
+  // (this path runs when the model is offline/rate-limited, so it must still look clean).
   const convo = (input.conversation || "").replace(/\s+/g, " ").trim();
-  if (convo) {
-    const tail = convo.slice(-400);
-    beats.push({ kind: "beat", text: firstSentence(tail) || "Claude's been working on this." });
+  const prose = convo.slice(-500).replace(/[{}\[\]"]/g, "").trim();
+  const looksJson = /"(type|role|sessionId|mode|timestamp|message|content)"\s*:/.test(convo.slice(-500)) || convo.trim().startsWith("{");
+  if (convo && !looksJson) {
+    beats.push({ kind: "beat", text: firstSentence(prose) || "Claude's been working on this." });
   } else {
-    beats.push({ kind: "beat", text: "Claude's been working on this." });
+    beats.push({ kind: "beat", text: "Claude's been working — open the terminal to see the details." });
   }
   // The closing ASK / next-action beat, driven by the ready state.
   if (input.state === "DONE") {
