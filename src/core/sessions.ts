@@ -587,8 +587,10 @@ export class SessionManager {
     for (const name of [`claudeos-${session.id}`, this.cockpitName(session)]) {
       if (this.hasSession(name)) {
         try {
-          execFileSync("tmux", ["send-keys", "-t", `=${name}`, "-l", text], { env: envNoTmux() });
-          execFileSync("tmux", ["send-keys", "-t", `=${name}`, "Enter"], { env: envNoTmux() });
+          // NB: send-keys resolves `-t <session>` to its active pane; the `=` exact-match prefix
+          // (fine for has-session) makes send-keys fail "can't find pane", so target the bare name.
+          execFileSync("tmux", ["send-keys", "-t", name, "-l", text], { env: envNoTmux() });
+          execFileSync("tmux", ["send-keys", "-t", name, "Enter"], { env: envNoTmux() });
           return true;
         } catch { return false; }
       }
