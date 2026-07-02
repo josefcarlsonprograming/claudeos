@@ -754,6 +754,11 @@ const _taskSent: Record<number, { role: string; text: string }[]> = {};
  *  (gist beats) interleaved with the operator's sent messages, ABC quick-replies, and a chat input
  *  whose text is written into the session's terminal in the background. Terminal is the drawer. */
 function renderChatInto(el: HTMLElement, it: any, P: "A" | "B") {
+  // Preserve the operator's in-progress message across live re-renders (the feed updates every tick).
+  const prevInp = document.getElementById("answer-input") as HTMLTextAreaElement | null;
+  const hadFocus = !!prevInp && document.activeElement === prevInp;
+  const prevVal = prevInp ? prevInp.value : "";
+  const prevSel = prevInp ? prevInp.selectionStart : null;
   const recap = (it.context && it.context.trim()) || it.one_liner || "";
   const opts = isAnswerable(it) ? optionsFor(it) : [];
   const chips = opts.length
@@ -773,7 +778,14 @@ function renderChatInto(el: HTMLElement, it: any, P: "A" | "B") {
     ch.addEventListener("click", () => { const i = parseInt((ch as HTMLElement).dataset.opt!, 10); if (opts[i]) void sendChatMessage(it, opts[i].text); }));
   el.appendChild(chatDrawerEl()); // persistent — #term-host mounts into its slot when the drawer opens
   const inp = el.querySelector("#answer-input") as HTMLTextAreaElement | null;
-  if (inp && S.focused === P && S.paneItem[P] !== it.id && !drawerTerminalFocused()) inp.focus();
+  if (inp) {
+    inp.value = prevVal; // restore in-progress typing across the live re-render
+    const freshLanding = S.focused === P && S.paneItem[P] !== it.id && !drawerTerminalFocused();
+    if (hadFocus || freshLanding) {
+      inp.focus();
+      if (prevSel != null) { try { inp.setSelectionRange(prevSel, prevSel); } catch {} }
+    }
+  }
 }
 
 /** Send a per-task chat message: write it into the session's terminal (background), show it as a
@@ -946,12 +958,12 @@ function renderPane(P: "A" | "B") {
     return;
   }
   if (view === "chat") {
-    // CHAT view (pane A): the SOUL-voiced gist feed + the reused Overview answer affordances, with
-    // the raw terminal in a collapsible drawer. Don't re-render while the operator is typing (answer
-    // box OR the drawer pty) — a background tick must not blow away half-typed input or blur the pty.
+    // CHAT view (pane A): the SOUL-voiced summary feed + your sent messages, with the raw terminal
+    // in a collapsible drawer. Always re-render so the feed stays live (new beats, new bubbles);
+    // renderChatInto PRESERVES the input value/focus/cursor, so a background tick can't lose typing.
     if (it._virtual) { renderSessionOnlyOverview(body, it.session); S.paneItem[P] = it.id; return; }
-    const keepTyping = P === S.focused && (answerInputFocused() || drawerTerminalFocused()) && S.paneItem[P] === it.id;
-    if (!keepTyping) { renderChatInto(body, it, P); S.paneItem[P] = it.id; }
+    if (drawerTerminalFocused()) return; // typing into the drawer pty — leave everything untouched
+    renderChatInto(body, it, P); S.paneItem[P] = it.id;
     return;
   }
   if (view === "diff") {
