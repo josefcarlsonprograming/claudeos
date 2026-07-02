@@ -295,6 +295,16 @@ body.dragging { cursor: col-resize; user-select: none; }
 .dot.WAITING_INPUT { background: var(--warn); }
 .dot.DONE { background: var(--good); }
 .dot.UNKNOWN { background: #4a5160; }
+.statedot { cursor: pointer; }
+.statedot:hover { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Manual status override menu (right-click a card / click its status dot). */
+.ctx-menu { position: fixed; z-index: 9999; background: var(--panel, #1b1f27); border: 1px solid var(--border, #333a48);
+  border-radius: 6px; box-shadow: 0 6px 24px rgba(0,0,0,.45); padding: 4px; min-width: 168px; font-size: 12px; color: var(--ink); }
+.ctx-menu .ctx-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+.ctx-menu .ctx-item:hover { background: var(--accent); color: #fff; }
+.ctx-menu .ctx-item:hover .dot { box-shadow: 0 0 0 1px #fff; }
+.ctx-menu .ctx-sep { height: 1px; background: var(--border, #333a48); margin: 4px 6px; }
+.ctx-menu .ctx-clear { color: var(--dim); }
 .sessions li.surfaced { color: var(--ink); box-shadow: inset 3px 0 0 var(--accent); }
 .sessions li.sessrow.surfaced .sess-title::after { content: " · in queue"; color: var(--accent); font-size: 11px; }
 .sessions .sess-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

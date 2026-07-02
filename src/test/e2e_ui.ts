@@ -124,6 +124,23 @@ async function run() {
     check("the queue is still intact after re-prioritizing (nothing dropped)", (await page.locator("#queue li").count()) === (await qstate()).queue.length);
   });
 
+  // ── status dot / right-click → manual status override ─────────────────────
+  await section("Status dot menu corrects a card's status (manual override)", async () => {
+    const dot = page.locator("#queue li .statedot").first();
+    check("queue cards render a clickable status dot", (await dot.count()) > 0 && (await dot.isVisible()));
+    await dot.click(); // "press the status of the card"
+    await page.waitForSelector(".ctx-menu", { timeout: 5000 });
+    const workOpt = page.locator(".ctx-menu .ctx-item[data-state='WORKING']");
+    check("clicking the status dot opens the status menu with state options", await workOpt.isVisible());
+    // Choosing an option must actually POST /api/overrideState (the "menu does nothing" bug-class).
+    const [resp] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes("/api/overrideState") && r.request().method() === "POST", { timeout: 8000 }),
+      workOpt.click(),
+    ]);
+    check("choosing a status POSTs /api/overrideState and the server answers ok:true", resp.ok() && (await resp.json()).ok === true);
+    check("the menu closes after choosing", (await page.locator(".ctx-menu").count()) === 0);
+  });
+
   // ── TERMINAL-FIRST: landing on a task focuses its terminal; ↑/↓ escape it ──
   await section("Terminal-first: selecting a task focuses the terminal pane (B)", async () => {
     await selectRow("gzip"); // SIMPLE_QUESTION → pane B defaults to terminal

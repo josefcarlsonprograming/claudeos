@@ -4764,6 +4764,67 @@ async function main() {
       /res\.action === "untagged"/.test(ctrlSrc) && /pushUndo\(this\.db, "mergePr"/.test(ctrlSrc));
   }
 
+  console.log("\n== MANUAL STATE OVERRIDE: right-click a card to correct/silence its status ==");
+  {
+    const odb = openDb(path.join(HOME, "override.db"));
+    const osm = new SessionManager(odb);
+    const oeng = new Engine(odb, osm, cfg, { enrich: false, discover: false, pr: false, kanban: false }); // offline → deterministic
+    const octrl = new Controller(odb, oeng, osm, cfg);
+    const omk = (name: string, text: string) => {
+      const cwd = path.join(HOME, "owts", name);
+      fs.mkdirSync(cwd, { recursive: true });
+      const tfile = writeTranscript(cwd, [{ role: "assistant", text }]);
+      return { id: osm.register({ repo: "/r", title: name, worktreePath: cwd, branch: "cockpit/" + name }), cwd, tfile };
+    };
+    const inQueue = (id: number) => oeng.queue().some((x) => x.session_id === id);
+
+    // A genuine question surfaces on its own — nothing overridden yet.
+    const a = omk("waiting-card", "Should I deploy to prod? (yes/no)");
+    await oeng.tick();
+    check("override: a genuine question surfaces before any override", inQueue(a.id));
+
+    // Operator right-clicks the card → "working" (the detector was wrong; it's still running).
+    octrl.overrideState(a.id, "WORKING");
+    const arow = getSession(odb, a.id)!;
+    eq("override: manual_state persisted", arow.manual_state, "WORKING");
+    eq("override: base = the detector's state at correction time", arow.manual_state_base, "WAITING_INPUT");
+    const dl = odb.prepare("SELECT * FROM decision_log WHERE session_id=? AND feedback='manual_state'").get(a.id) as any;
+    check("override: the correction is logged for the learning loop (from→to)", !!dl && dl.decision === "WORKING" && dl.state === "WAITING_INPUT");
+
+    // Next tick: forcing WORKING pulls the already-surfaced card OUT of Up Next and shows on the row.
+    await oeng.tick();
+    check("override: forcing WORKING removes the card from Up Next", !inQueue(a.id));
+    eq("override: the roster status reflects the override", getSession(odb, a.id)!.state, "WORKING");
+
+    // While the detector still reads the same underlying state, the override holds (stays silenced).
+    await oeng.tick();
+    check("override: the override holds while reality is unchanged", !inQueue(a.id));
+
+    // Reality moves (the session actually finishes) → the override auto-expires so it can't strand a
+    // real result forever; the card resurfaces on the detector's fresh DONE reading.
+    writeTranscript(a.cwd, [{ role: "assistant", text: "Deployed — all checks are green and the task is complete." }]);
+    const fut = new Date(Date.now() + 5000); fs.utimesSync(a.tfile, fut, fut); // bust the mtime-cached tail
+    await oeng.tick();
+    check("override: auto-expires once the detector's state moves off the base → resurfaces", inQueue(a.id));
+    check("override: the expired override is cleared from the row", getSession(odb, a.id)!.manual_state == null);
+
+    // Undo reverts a correction cleanly (status + logged decision).
+    const b = omk("undo-card", "Should I merge the branch now? (yes/no)");
+    await oeng.tick();
+    octrl.overrideState(b.id, "DONE");
+    eq("override: set before undo", getSession(odb, b.id)!.manual_state, "DONE");
+    octrl.undo();
+    check("override: undo reverts the manual status", getSession(odb, b.id)!.manual_state == null);
+    eq("override: undo removes the logged decision", (odb.prepare("SELECT COUNT(*) c FROM decision_log WHERE session_id=? AND feedback='manual_state'").get(b.id) as any).c, 0);
+
+    // Clearing an override (right-click → "let Claude decide") does NOT log a decision.
+    octrl.overrideState(b.id, "WORKING");
+    octrl.overrideState(b.id, null);
+    check("override: clearing removes the override", getSession(odb, b.id)!.manual_state == null);
+
+    openDb(process.env.COCKPIT_DB); // restore the shared singleton
+  }
+
   process.exit(summary());
 }
 

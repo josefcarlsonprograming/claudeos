@@ -116,6 +116,7 @@
     sendPaneKey: (sessionId, key, named) => jpost("/api/key", { sessionId, key, named: !!named }),
     setPinned: (sessionId, pinned) => jpost("/api/pin", { sessionId, pinned: !!pinned }),
     setManualImportance: (sessionId, value) => jpost("/api/manualImportance", { sessionId, value }),
+    overrideState: (sessionId, state) => jpost("/api/overrideState", { sessionId, state: state || null }),
     renameSession: (sessionId, title) => jpost("/api/renameSession", { sessionId, title }),
     prDiff: (sessionId) => jpost("/api/prDiff", { sessionId }),
     worktreeDiff: (sessionId) => jpost("/api/worktreeDiff", { sessionId }),

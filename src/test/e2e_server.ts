@@ -66,6 +66,8 @@ async function run(srv: DemoServer) {
   check("POST /api/key bad sessionId → 400", (await post("/api/key", { sessionId: "nope", key: "x" })).status === 400);
   check("POST /api/sendAnswer missing itemId → 400", (await post("/api/sendAnswer", { answer: "hi" })).status === 400);
   check("POST /api/pin bad sessionId → 400", (await post("/api/pin", { pinned: true })).status === 400);
+  check("POST /api/overrideState bad state → 400", (await post("/api/overrideState", { sessionId: firstSid, state: "BOGUS" })).status === 400);
+  check("POST /api/overrideState missing sessionId → 400", (await post("/api/overrideState", { state: "WORKING" })).status === 400);
   check("unknown route → 404", (await get("/api/does-not-exist")).status === 404);
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -83,6 +85,22 @@ async function run(srv: DemoServer) {
   check("POST /api/manualImportance sets the value", sessionsOf(await state()).find((s) => s.id === miSid)?.manual_importance === 55);
   await postJson("/api/manualImportance", { sessionId: miSid, value: null });
   check("POST /api/manualImportance null clears it", sessionsOf(await state()).find((s) => s.id === miSid)?.manual_importance == null);
+
+  // manual STATE override (right-click a card → correct/silence its status)
+  const msOf = (st: any, id: number): any => {
+    const q = (st.queue || []).find((x: any) => x.session_id === id);
+    if (q) return q.session?.manual_state ?? null;
+    const r = (st.sessions || []).find((x: any) => (x.row?.id ?? x.id) === id);
+    return (r?.row ?? r)?.manual_state ?? null;
+  };
+  const osItem = st.queue.find((q: any) => q.session.manual_state == null) || st.queue[0];
+  const osSid = osItem.session_id;
+  await postJson("/api/overrideState", { sessionId: osSid, state: "WORKING" });
+  const osSt = await state();
+  check("POST /api/overrideState sets session.manual_state", msOf(osSt, osSid) === "WORKING");
+  check("POST /api/overrideState (WORKING) drops the card from Up Next", !osSt.queue.some((q: any) => q.session_id === osSid));
+  await postJson("/api/overrideState", { sessionId: osSid, state: "" });
+  check("POST /api/overrideState clear removes the override", msOf(await state(), osSid) == null);
 
   // quick-prompt PRIORITY: /api/newSession accepts a launch-time importance (Ctrl+Enter in the
   // overlay) and returns ok+id. (The importance→db-row write + clamping is asserted deterministically
