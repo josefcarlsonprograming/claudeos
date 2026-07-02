@@ -1118,12 +1118,13 @@ export class Controller {
         recordAnswer(this.db, { itemId: it.id, sessionId, category: it.category, state: it.state, question: it.question || "", suggested: it.suggested_answer || "", options, final: text });
       }
     } catch {}
-    // LIVE session (tmux pane) → type into the pane. IDLE session → resume its conversation headlessly
-    // and deliver the message, so the chat drives the session even with no live terminal.
+    // 1) discovered live pane → type into it. 2) the durable cockpit tmux the drawer attaches to
+    // (claudeos-<id>) → send-keys to that SAME running claude. 3) otherwise resume headlessly.
     if ((s as any).is_live_pane) {
       const live = this.sessions.sendInput(s, text);
-      return { ok: live, live, mode: live ? "live" : "failed" };
+      if (live) return { ok: true, live: true, mode: "live" };
     }
+    if (this.sessions.sayToCockpitTmux(s, text)) return { ok: true, live: true, mode: "tmux" };
     const r = this.sessions.resumeAndSend(s, text);
     return { ok: r === "sent", live: false, mode: r };
   }

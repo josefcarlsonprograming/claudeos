@@ -579,11 +579,31 @@ export class SessionManager {
    *  turn appends to the SAME transcript, so the next tick's gist summarizes the response — the chat
    *  drives the session even when it has no live tmux pane. Guarded against concurrent resumes.
    *  Returns "sent" | "busy" | "no-session" | "failed". NEVER call for a LIVE session (use sendInput). */
+  /** Write a message into the session's DURABLE cockpit tmux (`claudeos-<id>` / `cockpit-<slug>`) —
+   *  the exact terminal the drawer attaches to — via send-keys. Returns true if such a live tmux
+   *  existed (so the chat and the drawer drive the SAME running claude, no double-run). */
+  sayToCockpitTmux(session: SessionRow, text: string): boolean {
+    if (this.demo) return false;
+    for (const name of [`claudeos-${session.id}`, this.cockpitName(session)]) {
+      if (this.hasSession(name)) {
+        try {
+          execFileSync("tmux", ["send-keys", "-t", `=${name}`, "-l", text], { env: envNoTmux() });
+          execFileSync("tmux", ["send-keys", "-t", `=${name}`, "Enter"], { env: envNoTmux() });
+          return true;
+        } catch { return false; }
+      }
+    }
+    return false;
+  }
+
   resumeAndSend(session: SessionRow, text: string): "sent" | "busy" | "no-session" | "failed" {
     if (this.demo) { this.demoAppend(session, text + "\n  ▸ (demo) resumed + message delivered\n> "); return "sent"; }
     const id = session.claude_session_id;
     if (!id) return "no-session";
     if (this._resuming.has(session.id)) return "busy";
+    // Never spawn a resume if ANY claude --resume already runs this exact session (a durable cockpit
+    // tmux, an ssh terminal, or a hand-launched one) — a concurrent resume corrupts the transcript.
+    try { const existing = execSync(`pgrep -f ${JSON.stringify("claude --resume " + id)}`, { encoding: "utf8", env: envNoTmux() }).trim(); if (existing) return "busy"; } catch { /* pgrep exit 1 = none running → safe to spawn */ }
     const cwd = session.worktree_path && fs.existsSync(session.worktree_path) ? session.worktree_path : os.homedir();
     try {
       const { spawn } = require("child_process");
