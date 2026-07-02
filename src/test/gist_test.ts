@@ -49,25 +49,26 @@ async function main() {
 
   // ---------- deterministic fallback (offline) ----------
   const fb = gistFallback(baseInput());
-  check("gistFallback returns at least one beat", fb.beats.length >= 1);
-  check("gistFallback ends on an 'ask' beat when WAITING_INPUT", fb.beats[fb.beats.length - 1].kind === "ask");
-  check("gistFallback respects maxBeats", gistFallback(baseInput({ maxBeats: 1 })).beats.length === 1);
+  check("gistFallback returns a summary", typeof fb.summary === "string" && fb.summary.length > 0);
+  check("gistFallback WAITING_INPUT summary carries a 🔴 needs-you marker", /🔴/.test(fb.summary));
+  check("gistFallback offers suggested replies", fb.suggestions.length >= 2);
   const done = gistFallback(baseInput({ state: "DONE", question: "" }));
-  check("gistFallback DONE still yields an ask/next beat", done.beats.some((b) => b.kind === "ask"));
+  check("gistFallback DONE summary uses 🔵 nothing-needed", /🔵/.test(done.summary));
 
   // ---------- persona injection ----------
   writeSoul("# SOUL\n\n- Writes GIST_SOUL_MARK short and warm.\n");
   const prompt = buildGistPrompt(baseInput());
   check("buildGistPrompt injects the SOUL voice", prompt.includes("GIST_SOUL_MARK"));
-  check("buildGistPrompt asks for a beats JSON shape", /beats/.test(prompt) && /"kind"/.test(prompt));
+  check("buildGistPrompt asks for a {summary,suggestions} JSON shape", /"summary"/.test(prompt) && /"suggestions"/.test(prompt));
+  check("buildGistPrompt asks for ONE message (co-worker voice)", /co-worker|ONE short message/i.test(prompt));
   check("buildGistPrompt includes the conversation tail", prompt.includes("update the callers"));
 
-  // ---------- generateGist: parse model beats + log to chat_log ----------
+  // ---------- generateGist: parse model summary+suggestions + log to chat_log ----------
   const gen = async (_p: string) =>
-    '{"beats":[{"kind":"beat","text":"Migrated the loader clean."},{"kind":"ask","text":"Want the callers updated too?"}]}';
+    '{"summary":"Migrated the loader clean. 🔴 Want the callers updated too?","suggestions":["Yes, update them 😊","No, leave them","Show me the diff"]}';
   const out = await generateGist(baseInput(), { gen, db });
-  eq("generateGist parsed 2 beats", out.beats.length, 2);
-  check("generateGist kept the ask beat kind", out.beats[1].kind === "ask");
+  check("generateGist parsed the summary", /Migrated the loader/.test(out.summary));
+  eq("generateGist parsed 3 suggestions", out.suggestions.length, 3);
   const logged = recentChat(db, { scope: "task", roles: ["gist"], limit: 5 });
   check("generateGist logged a chat_log gist row", logged.length === 1);
   check("chat_log row captured the prompt", !!logged[0].prompt && logged[0].prompt!.includes("GIST_SOUL_MARK"));
@@ -75,16 +76,16 @@ async function main() {
 
   // ---------- generateGist falls back on an unparseable / empty model reply ----------
   const bad = await generateGist(baseInput(), { gen: async () => "sorry, no json here" });
-  check("generateGist falls back when the model returns no JSON", bad.beats.length >= 1);
+  check("generateGist falls back when the model returns no JSON", bad.summary.length >= 1 && bad.suggestions.length >= 2);
 
   // ---------- refreshGist caching on the content key ----------
   _clearGistCache();
   let calls = 0;
-  const counting = async (_p: string) => { calls++; return '{"beats":[{"kind":"beat","text":"x"}]}'; };
+  const counting = async (_p: string) => { calls++; return '{"summary":"x done. 🔵 nothing needed","suggestions":["ok 😊","more"]}'; };
   await refreshGist(baseInput(), "sig-1", { gen: counting });
   await refreshGist(baseInput(), "sig-1", { gen: counting });
   eq("refreshGist reuses the cache on an unchanged key", calls, 1);
-  check("cachedGist exposes the last gist", (cachedGist(7)?.beats.length || 0) >= 1);
+  check("cachedGist exposes the last gist", !!cachedGist(7)?.summary);
   await refreshGist(baseInput(), "sig-2", { gen: counting });
   eq("refreshGist regenerates on a new key", calls, 2);
 

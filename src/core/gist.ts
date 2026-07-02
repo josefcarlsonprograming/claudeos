@@ -1,16 +1,17 @@
 /**
- * gist.ts — the SOUL-voiced "highlights" of a session's conversation.
+ * gist.ts — the friendly co-worker summary of a session (the "Jarvis" voice).
  *
- * The chat interface (Pane A "chat" view) shows, instead of the raw terminal, a short feed of
- * BEATS: a few friendly, decisive one-liners in the operator's own voice (see soul.ts) that say
- * what Claude has been doing and — if it's waiting — what it's asking. "Like when Claude is
- * talking, just the highlights, not the whole thing."
+ * Instead of the raw terminal, the chat view shows ONE short, warm message in the operator's own
+ * voice (see soul.ts) — like a co-worker giving you the gist: what's been done here, and what (if
+ * anything) is needed from you. Plus 2-4 SUGGESTED REPLIES he can click to respond in one tap.
  *
- * One cheap `claude -p` (haiku, lean) per gist, with personaBlock() injected so the beats read in
- * the operator's voice. Cached by (sessionId, transcript-mtime) so an unchanged session costs zero
- * model calls — exactly the enrich.ts discipline. Always degrades to a deterministic fallback so
- * the view never blanks offline / on failure. Every real generation is logged to chat_log (role
- * 'gist') so the operator can review what was distilled and where it diverged from reality.
+ * Style (from the operator's OpenClaw/Jarvis assistant he likes): at most ~2 sentences, clean and
+ * human — no headers, no bullet lists. Uses 🔴 = needs you · 🔵 = nothing needed, close it ·
+ * 🥳/✅ = a win · 😊 = warmth. Nothing else.
+ *
+ * One cheap `claude -p` (haiku, lean) per gist, personaBlock() injected. Cached by (sessionId,
+ * content-key) so an unchanged session costs zero model calls. Always degrades to a deterministic
+ * fallback so the view never blanks. Every real generation is logged to chat_log (role 'gist').
  */
 import { SessionState, TriageCategory, logChat } from "./db";
 import { claudeJson } from "./claude";
@@ -21,59 +22,44 @@ export interface GistInput {
   title: string;
   state: SessionState;
   category?: TriageCategory | null;
-  question?: string; // the ready question / final text (drives the closing ASK beat)
-  conversation: string; // recent conversation tail, plain text (the caller renders it)
+  question?: string; // the ready question / final text
+  conversation: string; // recent conversation tail, plain text
   lastPrompt?: string; // the operator's most recent request to this session (verbatim)
   model: string;
-  maxBeats: number;
-}
-
-export interface Beat {
-  kind: "beat" | "ask"; // 'beat' = a highlight of what happened; 'ask' = the open question / next call
-  text: string;
+  maxBeats: number; // legacy knob; now used only to cap suggestions
 }
 
 export interface GistOutput {
-  beats: Beat[];
+  summary: string; // ONE friendly co-worker message: what's done + what's needed (≤ ~2 sentences)
+  suggestions: string[]; // 2-4 one-tap replies the operator can send back, best-first
 }
 
 /** Text generator; injected in tests, defaults to the lean `claude -p`. */
 export type Gen = (prompt: string) => Promise<string | null>;
 
-function firstSentence(s: string, max = 160): string {
+function firstSentence(s: string, max = 200): string {
   const t = (s || "").replace(/\s+/g, " ").trim();
   const m = t.match(/^.*?[.?!](\s|$)/);
   const out = (m ? m[0] : t).trim();
   return out.length > max ? out.slice(0, max - 1) + "…" : out;
 }
 
-/** Deterministic beats when the model call fails / is offline. Honest and grounded: it only
- *  restates the state + the question + the tail of the conversation — never invents progress. */
+/** Deterministic summary when the model is offline/rate-limited — honest, never invents progress. */
 export function gistFallback(input: GistInput): GistOutput {
-  const beats: Beat[] = [];
-  // A single "what happened" beat from the tail of the conversation. The conversation is raw JSONL,
-  // so only use it if the tail reads as prose — never dump `{"type":...}` machinery as a "beat"
-  // (this path runs when the model is offline/rate-limited, so it must still look clean).
   const convo = (input.conversation || "").replace(/\s+/g, " ").trim();
-  const prose = convo.slice(-500).replace(/[{}\[\]"]/g, "").trim();
   const looksJson = /"(type|role|sessionId|mode|timestamp|message|content)"\s*:/.test(convo.slice(-500)) || convo.trim().startsWith("{");
-  if (convo && !looksJson) {
-    beats.push({ kind: "beat", text: firstSentence(prose) || "Claude's been working on this." });
-  } else {
-    beats.push({ kind: "beat", text: "Claude's been working — open the terminal to see the details." });
-  }
-  // The closing ASK / next-action beat, driven by the ready state.
-  if (input.state === "DONE") {
-    beats.push({ kind: "ask", text: input.question ? firstSentence(input.question) : "Looks done — take a look and call it." });
-  } else if (input.state === "WAITING_INPUT") {
-    beats.push({ kind: "ask", text: input.question ? firstSentence(input.question) : "It needs a decision from you." });
-  } else if (input.question) {
-    beats.push({ kind: "ask", text: firstSentence(input.question) });
-  }
-  return { beats: beats.slice(0, Math.max(1, input.maxBeats)) };
+  const did = convo && !looksJson ? firstSentence(convo.slice(-400)) : "Claude's been working on this.";
+  let need: string;
+  if (input.state === "WAITING_INPUT") need = input.question ? "🔴 " + firstSentence(input.question) : "🔴 It needs a decision from you.";
+  else if (input.state === "DONE") need = input.question ? "🔵 " + firstSentence(input.question) : "🔵 Looks done — nothing needed, you can close it.";
+  else need = "🔵 Nothing needed right now.";
+  const suggestions =
+    input.state === "WAITING_INPUT" ? ["Yes, go ahead 😊", "Hold on — let me check first", "Do it your way"]
+    : ["Looks good, thanks! 😊", "One more thing…", "Close it out"];
+  return { summary: `${did} ${need}`.trim(), suggestions: suggestions.slice(0, Math.max(2, Math.min(4, input.maxBeats || 3))) };
 }
 
-/** Build the single gist prompt, with the operator's persona injected. (Exported for tests.) */
+/** Build the gist prompt — one friendly co-worker message + suggested replies. (Exported for tests.) */
 export function buildGistPrompt(input: GistInput): string {
   let persona = "";
   try { persona = require("./soul").personaBlock() || ""; } catch {}
@@ -82,19 +68,21 @@ export function buildGistPrompt(input: GistInput): string {
       ? `\nThe operator's most recent request to this session:\n"""${input.lastPrompt.slice(0, 1200)}"""`
       : "";
   const stateLine =
-    input.state === "DONE"
-      ? "The session just FINISHED — the last beat should tell the operator to take a look and decide if it's done."
-      : input.state === "WAITING_INPUT"
-        ? "The session is WAITING on the operator — the last beat (kind 'ask') should be the actual question/decision it needs, phrased warmly."
-        : "Summarize where the session stands.";
-  return `You are narrating a Claude Code session to its operator, in HIS voice — short, warm, engaging, decisive, no corporate filler. Give the GIST: a few highlights of what's been happening, "like when Claude is talking" — NOT the whole transcript.
+    input.state === "DONE" ? "This session just FINISHED — say what it did, and that it's ready for a look (usually 🔵 nothing needed)."
+    : input.state === "WAITING_INPUT" ? "This session is WAITING on the operator — end with 🔴 the ONE thing you need from him, phrased as his own words."
+    : "Summarize where it stands.";
+  return `You are ClaudeOS — the operator's friendly AI co-worker (like his "Jarvis"). Summarize this Claude Code session for him in HIS voice: warm, short, decisive, human, no corporate filler.
 ${persona}
 ${stateLine}
 
-Return JSON: {"beats": [{"kind": "beat"|"ask", "text": "..."}]}
-- ${input.maxBeats} beats MAX, newest-last, each ONE short sentence in his voice.
-- "beat" = a highlight of what Claude did / found / decided. "ask" = the open question or the one next action. End with exactly one "ask" beat when the session is waiting or done.
-- Ground every beat in the conversation below — never invent progress that isn't there.
+Write ONE short message (NOT a list, NOT separate lines, NO markdown/headers/bullets), at most 2 sentences:
+1. What's been done here (one sentence).
+2. What's needed from him — one sentence, specific — or that nothing is.
+Emojis: use ONLY 🔴 (needs him) · 🔵 (nothing needed / close it) · 🥳 or ✅ (a win) · 😊 (warmth). Put the marker right before the "what's needed" part. Keep it clean and real.
+
+Also give 2-4 SUGGESTED REPLIES he can click to respond — short, in his voice, exactly what he'd type back (best first). For a finished/idle session, suggest natural next things (e.g. "Looks good, thanks! 😊", a follow-up ask, or "Close it out").
+
+Return JSON ONLY: {"summary":"<the one message>","suggestions":["<reply 1>","<reply 2>","<reply 3>"]}
 
 Session title: ${input.title}
 Recent conversation (tail):
@@ -112,47 +100,34 @@ export async function generateGist(
     opts?.gen || ((p: string) => require("./claude").claudePrompt(p + "\n\nRespond with ONLY valid minified JSON, no prose, no code fences.", { model: input.model, timeoutMs: 60000, label: "gist" }));
 
   let raw: string | null = null;
-  try {
-    raw = await gen(prompt);
-  } catch {
-    raw = null;
-  }
+  try { raw = await gen(prompt); } catch { raw = null; }
   if (!raw) return fallback;
 
-  let parsed: { beats?: { kind?: string; text?: string }[] } | null = null;
+  let parsed: { summary?: string; suggestions?: string[] } | null = null;
   const m = raw.match(/\{[\s\S]*\}/);
   if (m) { try { parsed = JSON.parse(m[0]); } catch { parsed = null; } }
 
-  let beats: Beat[] = [];
-  if (parsed && Array.isArray(parsed.beats)) {
-    beats = parsed.beats
-      .filter((b) => b && typeof b.text === "string" && b.text.trim())
-      .slice(0, Math.max(1, input.maxBeats))
-      .map((b) => ({ kind: b.kind === "ask" ? "ask" : "beat", text: String(b.text).trim() }));
+  const summary = parsed && typeof parsed.summary === "string" && parsed.summary.trim() ? parsed.summary.trim() : "";
+  let suggestions: string[] = [];
+  if (parsed && Array.isArray(parsed.suggestions)) {
+    suggestions = parsed.suggestions.filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim()).slice(0, 4);
   }
-  if (!beats.length) return fallback;
+  if (!summary) return fallback;
+  if (!suggestions.length) suggestions = fallback.suggestions;
 
-  const out: GistOutput = { beats };
-  // Log the real generation (best-effort) — the durable record the operator reviews.
+  const out: GistOutput = { summary, suggestions };
   if (opts?.db) {
     let persona = "";
     try { persona = require("./soul").personaBlock() || ""; } catch {}
     logChat(opts.db, {
-      scope: "task",
-      role: "gist",
-      sessionId: input.sessionId,
-      content: JSON.stringify(out.beats),
-      prompt,
-      personaSnapshot: persona || null,
-      model: input.model,
+      scope: "task", role: "gist", sessionId: input.sessionId,
+      content: JSON.stringify(out), prompt, personaSnapshot: persona || null, model: input.model,
     });
   }
   return out;
 }
 
-// --- cache (by sessionId → content key), so an unchanged session costs zero model calls. The key
-// is any string that changes exactly when the gist should: the engine passes the ready-turn
-// signature (stable while the same turn is parked); the server passes the transcript mtime. ---
+// --- cache (by sessionId → content key), so an unchanged session costs zero model calls. ---
 const _gistCache = new Map<number, { key: string; out: GistOutput }>();
 
 /** The last gist computed for a session (for the /api/state payload), or null. */

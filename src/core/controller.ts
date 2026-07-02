@@ -151,7 +151,7 @@ export class Controller {
         const { cachedGist } = require("./gist");
         for (const q of queue) {
           const g = cachedGist(q.session_id);
-          if (g && g.beats && g.beats.length) (q as any).gist = g.beats;
+          if (g && g.summary) (q as any).gist = g; // { summary, suggestions }
         }
       } catch {}
     }
