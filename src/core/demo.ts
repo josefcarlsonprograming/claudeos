@@ -13,6 +13,7 @@ import * as os from "os";
 import * as path from "path";
 import { DatabaseSync } from "node:sqlite";
 import { SessionManager } from "./sessions";
+import { gitEnv } from "./worktree";
 import { upsertPr, setPinned, setManualImportance, upsertKanban, recordExample, bumpLearnedWeight } from "./db";
 import { FullConfig } from "./config";
 
@@ -116,7 +117,7 @@ function writeTranscript(cwd: string, lines: { role: string; text?: string; stop
 
 function gitRepoWithDiff(dir: string, changedLines: number): void {
   fs.mkdirSync(dir, { recursive: true });
-  const g = (args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+  const g = (args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore", env: gitEnv() });
   const f = path.join(dir, "file.txt");
   if (!fs.existsSync(path.join(dir, ".git"))) {
     g(["init", "-q"]);
@@ -137,7 +138,7 @@ export function buildDemoPrRepo(): { path: string; head: string; base: string; c
   const dir = path.join(os.tmpdir(), `cockpit-demo-prrepo`);
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   fs.mkdirSync(dir, { recursive: true });
-  const g = (args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+  const g = (args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore", env: gitEnv() });
   g(["init", "-q", "-b", "main"]);
   g(["config", "user.email", "demo@demo"]);
   g(["config", "user.name", "demo"]);

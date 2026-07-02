@@ -15,7 +15,7 @@ import { ItemRow, SessionRow, SessionState, setPinned, setManualImportance, setM
 import { effectiveSnoozePenalty } from "./priority";
 import { readRanking } from "./ranking";
 import { prDiff, prStatus, prMerge, prSeedPrompt, localRepoForPr } from "./pr";
-import { createPrWorktree } from "./worktree";
+import { createPrWorktree, gitEnv } from "./worktree";
 import { pretrust } from "./pretrust";
 import { FAKE_PR_DIFF, FAKE_PR_STATUS } from "./demo";
 import { pushUndo, undo as undoStack, peekUndo, undoCount, nextDecisionLogId, UndoOp } from "./undo";
@@ -1866,7 +1866,7 @@ export class Controller {
       if (s && s.pr_local_repo && s.pr_base_ref && s.pr_head_ref) {
         try {
           const { execFileSync } = require("child_process");
-          const diff = execFileSync("git", ["-C", s.pr_local_repo, "diff", `${s.pr_base_ref}..${s.pr_head_ref}`], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+          const diff = execFileSync("git", ["-C", s.pr_local_repo, "diff", `${s.pr_base_ref}..${s.pr_head_ref}`], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: gitEnv() });
           return { ok: true, diff };
         } catch { /* fall through to canned */ }
       }
@@ -2033,7 +2033,7 @@ export class Controller {
       if (s && s.pr_local_repo && s.pr_base_ref && s.pr_head_ref) {
         try {
           const { execFileSync } = require("child_process");
-          const g = (args: string[]) => execFileSync("git", ["-C", s.pr_local_repo, ...args], { encoding: "utf8" });
+          const g = (args: string[]) => execFileSync("git", ["-C", s.pr_local_repo, ...args], { encoding: "utf8", env: gitEnv() });
           const commits = g(["rev-list", "--count", `${s.pr_base_ref}..${s.pr_head_ref}`]).trim();
           g(["checkout", "-q", s.pr_base_ref]);
           g(["merge", "--no-ff", "-m", `Merge ${s.pr_head_ref} into ${s.pr_base_ref} (demo)`, s.pr_head_ref]);
