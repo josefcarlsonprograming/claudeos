@@ -827,17 +827,21 @@ function pollForReply(sid: number) {
   const w = _taskWaiting[sid];
   if (!w) return;
   w.poll++;
-  const done = () => { delete _taskWaiting[sid]; render(); };
-  if (w.poll > 22) { done(); setStatus("still working — open the terminal (Ctrl+G t) to watch it live"); return; } // ~90s cap
+  const done = (msg: string) => { delete _taskWaiting[sid]; render(); setStatus(msg); };
   setTimeout(async () => {
     if (!_taskWaiting[sid]) return;
     try { await refresh(); } catch {}          // cheap: tick may have regenerated the gist
-    // Force a fresh summary a few times (not every tick — each is a haiku call).
-    if (w.poll % 2 === 0 && api.gist) {
-      try { const b = await api.gist(sid, true); if (Array.isArray(b) && b.length) _gistCacheR[sid] = b; } catch {}
+    // Force a fresh summary each tick while waiting (a handful of haiku calls per exchange).
+    let changed = false;
+    if (api.gist) {
+      try { const b = await api.gist(sid, true); if (Array.isArray(b) && b.length) { _gistCacheR[sid] = b; } } catch {}
     }
     const cur = JSON.stringify(_gistCacheR[sid] || beatsForSid(sid));
-    if (cur !== w.baseSig && cur !== "[]" && cur !== "undefined") { done(); setStatus("the session replied"); return; }
+    changed = cur !== w.baseSig && cur !== "[]" && cur !== "undefined";
+    // Clear on a changed summary, or after ~16s (a trivial reply may not move the summary — don't
+    // spin forever), whichever comes first. Always show the freshest summary when clearing.
+    if (changed) return done("the session replied");
+    if (w.poll >= 4) return done("delivered — summary is up to date");
     pollForReply(sid);
   }, 4000);
 }
