@@ -11,9 +11,9 @@ A personalized, single-operator **cockpit** for running ~20 independent Claude C
 
 ## Repo workflow (rules for this repo — DIFFERENT from your-repo)
 
-- The main branch is **`master`**.
-- Prefer **branch-from-master → open PR → merge the PR into master**. Small things may be committed **directly to master**.
-- **You are pre-authorized to merge PRs and push to master in this repo without asking.** Never ask the operator about merging here. (This is the opposite of the your-repo repo, where you must never push to master.)
+- The main branch is **`main`** (the live GitHub default; older docs below say "master" — read it as `main`).
+- Prefer **branch-from-main → open PR → merge the PR into main**. Small things may be committed **directly to main**.
+- **ALWAYS PUSH AND MERGE — NEVER ASK, NEVER LEAVE WORK LOCAL (operator standing order, 2026-07-02).** Every time you finish a change here you **push it and land it on `main`** the same turn: branch → `git push` → `gh pr create --base main` → `gh pr merge --squash --delete-branch`, or commit straight to `main` for small things. You are fully pre-authorized — do **not** ask the operator whether to push or merge, and do not end a turn with a committed-but-unpushed change. (This is the opposite of the your-repo repo, where you must never push to master.) Note: `main` is checked out in the operator's primary worktree, so `gh pr merge --delete-branch` may fail its post-merge *local* checkout step with "'main' is already used by worktree" — the **merge still lands on GitHub**; just `git push origin --delete <branch>` to finish, and `git fetch` to confirm the squash commit is on `origin/main`.
 - **Keep `master` green — an automated gate enforces it.** Git hooks live in `scripts/git-hooks/` and auto-activate via `npm install` (postinstall sets `core.hooksPath`); run `npm run hooks:install` to enable them by hand.
   - **pre-commit** → `npm run build`. A commit that doesn't compile is blocked. (This is the gate that catches the whole "broke the build, can't start the app" class — e.g. a stray backtick in a SQL template literal.)
   - **pre-push to `master`/`main`** → build + core harness + server E2E (~40s); the push goes through **only if green**. Pushing a **branch** skips the gate (iterate fast — gate when you merge to master). `FULL=1 git push` *or* `[full-test]` in the commit message also runs the browser UI click-through tier.
