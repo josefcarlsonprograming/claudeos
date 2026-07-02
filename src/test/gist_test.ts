@@ -26,6 +26,7 @@ for (const f of ["weights.json", "keymap.json"]) {
 import { openDb, logChat, recentChat } from "../core/db";
 import { writeSoul } from "../core/soul";
 import { gistFallback, buildGistPrompt, generateGist, refreshGist, cachedGist, _clearGistCache } from "../core/gist";
+import { queueSummary, buildAssistantPrompt, parseAssistantReply } from "../core/assistant";
 
 function baseInput(over: any = {}) {
   return {
@@ -95,6 +96,26 @@ async function main() {
   check("recentChat is newest-first", globalRows[0].role === "assistant");
   const taskRows = recentChat(db, { sessionId: 7, limit: 10 });
   check("recentChat filters by session", taskRows.length >= 1 && taskRows.every((r) => r.session_id === 7));
+
+  // ---------- Stage 3: global assistant (pure prompt-build + parse) ----------
+  console.log("\n== Assistant (global cockpit chat) ==");
+  const qs = queueSummary([{ sessionId: 5, title: "dataloader", category: "SIMPLE_QUESTION", state: "WAITING_INPUT", one_liner: "asks yes/no" }]);
+  check("queueSummary lists the session id + title", qs.includes("session 5") && qs.includes("dataloader"));
+  check("queueSummary handles an empty queue", /empty/i.test(queueSummary([])));
+  writeSoul("# SOUL\n\n- ASSIST_SOUL_MARK warm and short.\n");
+  const ap = buildAssistantPrompt(require("../core/soul").personaBlock(), qs, "what needs me?", [{ role: "user", content: "hi" }]);
+  check("buildAssistantPrompt injects the SOUL voice", ap.includes("ASSIST_SOUL_MARK"));
+  check("buildAssistantPrompt includes the queue summary + action vocabulary", ap.includes("dataloader") && /answer\|dismiss\|complete\|focus\|none/.test(ap));
+  check("buildAssistantPrompt carries recent history", ap.includes("hi"));
+  const r1 = parseAssistantReply('{"say":"On it — sending yes.","action":{"type":"answer","sessionId":5,"text":"yes"}}');
+  check("parseAssistantReply extracts say", r1.say === "On it — sending yes.");
+  check("parseAssistantReply extracts a valid action", r1.action.type === "answer" && r1.action.sessionId === 5 && r1.action.text === "yes");
+  const r2 = parseAssistantReply("just some prose, no json");
+  check("parseAssistantReply degrades to say + none for non-JSON", r2.action.type === "none" && r2.say.length > 0);
+  const r3 = parseAssistantReply('{"say":"hm","action":{"type":"nuke","sessionId":9}}');
+  check("parseAssistantReply rejects an unknown action type (→ none)", r3.action.type === "none");
+  const r4 = parseAssistantReply(null);
+  check("parseAssistantReply handles a null model reply", r4.action.type === "none" && r4.say.length > 0);
 
   process.exit(summary());
 }

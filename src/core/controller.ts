@@ -1100,6 +1100,54 @@ export class Controller {
     return await refreshGist(input, String(mtimeMs), opts);
   }
 
+  /** GLOBAL cockpit chat (Stage 3): the operator talks TO ClaudeOS, which narrates in his SOUL voice
+   *  and can drive the queue (answer / dismiss / complete / focus) via the existing actions. Every
+   *  turn is logged to chat_log (scope 'global'). Best-effort; never throws to the caller. */
+  async cockpitChat(message: string, history: { role: "user" | "assistant"; content: string }[] = []): Promise<{ ok: boolean; say: string; action: any; did: string | null }> {
+    const { queueSummary, buildAssistantPrompt, parseAssistantReply } = require("./assistant");
+    const { logChat } = require("./db");
+    let persona = "";
+    try { persona = require("./soul").personaBlock() || ""; } catch {}
+    // Compact queue summary from the live ranked queue.
+    const queue = this.engine.queue().filter((q: any) => !q._team);
+    const lines = queue.slice(0, 12).map((q: any) => ({
+      sessionId: q.session_id,
+      title: (q.session && (q.session.manual_title || q.session.clean_title || q.session.title)) || "session",
+      category: q.category, state: q.state, one_liner: q.one_liner,
+    }));
+    const prompt = buildAssistantPrompt(persona, queueSummary(lines), message, history);
+    logChat(this.db, { scope: "global", role: "user", content: message });
+
+    const model = this.demo ? "" : this.cfg.models.triage;
+    let raw: string | null = null;
+    if (this.demo) {
+      // Demo: no real model — deterministic honest reply (keeps the sandbox + tests fast/offline).
+      raw = JSON.stringify({ say: lines.length ? `${lines.length} waiting — top is "${lines[0].title}".` : "Nothing needs you right now.", action: { type: "none" } });
+    } else {
+      try { raw = await require("./claude").claudePrompt(prompt, { model, timeoutMs: 60000, label: "assistant" }); } catch { raw = null; }
+    }
+    const reply = parseAssistantReply(raw);
+
+    // Execute at most one action, grounded in the current queue (never act on an unknown session).
+    let did: string | null = null;
+    try {
+      const a = reply.action || { type: "none" };
+      const known = (sid: any) => lines.some((l: any) => l.sessionId === sid);
+      if (a.type === "focus" && a.value) { this.setFocus(String(a.value)); did = `focus set to "${a.value}"`; }
+      else if (a.type === "complete" && known(a.sessionId)) { this.completeTask(a.sessionId); did = `completed session ${a.sessionId}`; }
+      else if ((a.type === "answer" || a.type === "dismiss") && known(a.sessionId)) {
+        const it = this.db.prepare("SELECT id FROM items WHERE session_id=? AND status='pending' ORDER BY id DESC LIMIT 1").get(a.sessionId) as { id: number } | undefined;
+        if (it) {
+          if (a.type === "answer" && a.text) { await this.sendAnswer(it.id, String(a.text)); did = `answered session ${a.sessionId}`; }
+          else if (a.type === "dismiss") { this.dismiss(it.id); did = `dismissed session ${a.sessionId}`; }
+        }
+      }
+    } catch { /* an action failure must not break the reply */ }
+
+    logChat(this.db, { scope: "global", role: "assistant", content: reply.say, prompt, model });
+    return { ok: true, say: reply.say, action: reply.action, did };
+  }
+
   attachCommand(sessionId: number): string {
     const s = this.getSession(sessionId);
     return s ? this.sessions.attachCommand(s) : "";

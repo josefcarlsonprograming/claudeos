@@ -136,6 +136,8 @@
     reprioritize: () => jpost("/api/reprioritize", {}),
     sessionPr: (sessionId) => jget("/api/sessionPr/" + sessionId).then((r) => r.pr),
     gist: (sessionId, force) => jget("/api/gist/" + sessionId + (force ? "?force=1" : "")).then((r) => (r && r.beats) || []),
+    cockpitChat: (message, history) => jpost("/api/cockpit-chat", { message, history: history || [] }),
+    chatLog: (opts) => { const o = opts || {}; const q = []; if (o.scope) q.push("scope=" + o.scope); if (o.sessionId != null) q.push("sessionId=" + o.sessionId); if (o.limit) q.push("limit=" + o.limit); return jget("/api/chat-log" + (q.length ? "?" + q.join("&") : "")).then((r) => (r && r.rows) || []); },
     mergePr: (sessionId, deleteBranch) => jpost("/api/mergePr", { sessionId, deleteBranch: !!deleteBranch }),
     diag: (payload) => jpost("/api/diag", payload),
     takeOverable: () => jget("/api/takeoverable").then((r) => r.agents),

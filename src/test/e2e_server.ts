@@ -63,6 +63,12 @@ async function run(srv: DemoServer) {
   check("/api/gist/<id> returns a beats[] array", Array.isArray(gistResp.beats));
   check("/api/gist/<id> beats are {kind,text} shaped (or empty)", gistResp.beats.every((b: any) => b && typeof b.text === "string" && (b.kind === "beat" || b.kind === "ask")));
   check("GET /api/gist/abc → 400 (bad sessionId)", (await get("/api/gist/abc")).status === 400);
+  check("GET /api/chat-log returns rows[]", Array.isArray((await getJson("/api/chat-log?limit=5")).rows));
+  const cc = await post("/api/cockpit-chat", { message: "what needs me?" });
+  const ccBody = await cc.json();
+  check("POST /api/cockpit-chat returns a spoken reply + action", cc.status === 200 && typeof ccBody.say === "string" && ccBody.say.length > 0 && !!ccBody.action);
+  check("POST /api/cockpit-chat missing message → 400", (await post("/api/cockpit-chat", {})).status === 400);
+  check("cockpit-chat logged a global thread turn", (await getJson("/api/chat-log?scope=global&limit=5")).rows.length > 0);
 
   // ──────────────────────────────────────────────────────────────────────────
   console.log("\n== Bad input is rejected (no 500s, no crashes) ==");

@@ -1891,6 +1891,7 @@ function runMasterCmd(e: KeyboardEvent): boolean {
   if (e.key === "j") { moveQueueSel(1); return false; }
   if (e.key === "k") { moveQueueSel(-1); return false; }
   if (e.key === "G") { S.jumpMode = true; setStatus("jump: press session number"); return false; }
+  if (e.key === ",") { toggleCockpitChat(); return false; } // Ctrl+G , = open the global "Ask ClaudeOS" chat
   const k = e.key.toLowerCase();
   const P = S.focused; // master acts on the FOCUSED pane
   switch (k) {
@@ -4430,6 +4431,109 @@ function initDetail(): void {
   setStatus("ClaudeOS · detached Diff/HTML view — drag me to your other screen");
 }
 
+// ============ GLOBAL COCKPIT CHAT (Stage 3): talk TO ClaudeOS, in the SOUL voice ============
+// A self-contained side panel (own DOM, own keydown that stopPropagations so the global handler
+// never sees it). Ask "what needs me?", "answer the dataloader yes", "focus on training" — it
+// narrates + drives the queue via /api/cockpit-chat. A "logs" toggle folds in the Stage-2 viewer.
+const _cc: { open: boolean; mode: "chat" | "logs"; busy: boolean; history: { role: "user" | "assistant"; content: string }[] } =
+  { open: false, mode: "chat", busy: false, history: [] };
+
+function ensureCockpitChatDom() {
+  if (document.getElementById("cc-panel")) return;
+  const panel = document.createElement("div");
+  panel.id = "cc-panel"; panel.className = "cc-panel"; panel.dataset.open = "false";
+  panel.innerHTML =
+    `<div class="cc-head"><span class="cc-title">💬 ClaudeOS</span>` +
+    `<span class="cc-tabs"><button class="cc-tab" data-cc="chat">chat</button><button class="cc-tab" data-cc="logs">logs</button></span>` +
+    `<button class="cc-close" title="close (Esc)">✕</button></div>` +
+    `<div id="cc-body" class="cc-body"></div>` +
+    `<div class="cc-input-row"><textarea id="cc-input" class="cc-input" rows="1" placeholder="ask ClaudeOS — Enter send · Esc close"></textarea></div>`;
+  document.body.appendChild(panel);
+  panel.querySelector(".cc-close")!.addEventListener("click", () => closeCockpitChat());
+  panel.querySelectorAll(".cc-tab").forEach((el) =>
+    el.addEventListener("click", () => { _cc.mode = (el as HTMLElement).dataset.cc as any; renderCockpitChat(); if (_cc.mode === "logs") void loadCockpitLogs(); }));
+  const inp = panel.querySelector("#cc-input") as HTMLTextAreaElement;
+  // Own the keyboard entirely while typing here — the global handler must never see these keys.
+  inp.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Escape") { e.preventDefault(); closeCockpitChat(); return; }
+    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); void sendCockpitChat(); }
+  });
+}
+
+function openCockpitChat() {
+  ensureCockpitChatDom();
+  _cc.open = true;
+  const panel = document.getElementById("cc-panel")!; panel.dataset.open = "true";
+  if (_cc.mode === "logs") void loadCockpitLogs();
+  renderCockpitChat();
+  setTimeout(() => { const i = document.getElementById("cc-input") as HTMLTextAreaElement | null; i && i.focus(); }, 0);
+}
+function closeCockpitChat() {
+  _cc.open = false;
+  const panel = document.getElementById("cc-panel"); if (panel) panel.dataset.open = "false";
+  try { (S.term as any) && applyKeyboardTarget(); } catch {}
+}
+function toggleCockpitChat() { _cc.open ? closeCockpitChat() : openCockpitChat(); }
+
+function renderCockpitChat() {
+  const body = document.getElementById("cc-body"); if (!body) return;
+  document.querySelectorAll("#cc-panel .cc-tab").forEach((el) =>
+    el.classList.toggle("active", (el as HTMLElement).dataset.cc === _cc.mode));
+  if (_cc.mode === "logs") return; // logs render is driven by loadCockpitLogs()
+  const bubbles = _cc.history.map((t) =>
+    `<div class="cc-msg cc-${t.role}">${esc(t.content)}</div>`).join("");
+  body.innerHTML = bubbles || `<div class="cc-empty">Ask me what needs you, or tell me what to do — "answer the dataloader yes", "dismiss the docs one", "focus on training".</div>`;
+  if (_cc.busy) body.innerHTML += `<div class="cc-msg cc-assistant cc-busy">…</div>`;
+  body.scrollTop = body.scrollHeight;
+}
+
+async function sendCockpitChat() {
+  const inp = document.getElementById("cc-input") as HTMLTextAreaElement | null;
+  if (!inp) return;
+  const msg = inp.value.trim();
+  if (!msg || _cc.busy) return;
+  inp.value = "";
+  _cc.history.push({ role: "user", content: msg });
+  _cc.busy = true; renderCockpitChat();
+  try {
+    const r = await api.cockpitChat(msg, _cc.history.slice(0, -1));
+    const say = (r && r.say) || "(no reply)";
+    _cc.history.push({ role: "assistant", content: r && r.did ? `${say}\n✓ ${r.did}` : say });
+    if (r && r.did) { await refresh(); } // an action changed the queue → repaint
+  } catch {
+    _cc.history.push({ role: "assistant", content: "I couldn't reach the server just now — try again." });
+  } finally {
+    _cc.busy = false; renderCockpitChat();
+    setTimeout(() => { const i = document.getElementById("cc-input") as HTMLTextAreaElement | null; i && i.focus(); }, 0);
+  }
+}
+
+async function loadCockpitLogs() {
+  const body = document.getElementById("cc-body"); if (!body) return;
+  body.innerHTML = `<div class="cc-empty">loading logs…</div>`;
+  try {
+    const rows = await api.chatLog({ limit: 80 });
+    if (!rows.length) { body.innerHTML = `<div class="cc-empty">No logged conversations yet.</div>`; return; }
+    body.innerHTML = rows.map((r: any) => {
+      const tag = r.role === "gist" ? "gist" : r.role === "user" ? "you" : r.role === "assistant" ? "claudeos" : (r.model || "prompt");
+      let txt = r.content || "";
+      if (r.role === "gist") { try { txt = (JSON.parse(r.content) || []).map((b: any) => "• " + b.text).join("\n"); } catch {} }
+      return `<div class="cc-log"><span class="cc-log-tag">${esc(tag)}</span><span class="cc-log-when">${esc((r.created_at || "").slice(5, 16))}</span><div class="cc-log-txt">${esc(String(txt).slice(0, 600))}</div></div>`;
+    }).join("");
+  } catch { body.innerHTML = `<div class="cc-empty">couldn't load logs.</div>`; }
+}
+
+function wireCockpitChat() {
+  ensureCockpitChatDom();
+  // Always-visible launcher so it's discoverable without a keybinding.
+  if (!document.getElementById("cc-launch")) {
+    const b = document.createElement("button");
+    b.id = "cc-launch"; b.className = "cc-launch"; b.title = "Ask ClaudeOS (Ctrl+G ,)"; b.textContent = "💬 Ask";
+    b.addEventListener("click", () => toggleCockpitChat());
+    document.body.appendChild(b);
+  }
+}
 (async function init() {
   if (IS_DETAIL) { initDetail(); return; } // detached Diff/HTML window: lean boot, no terminal/queue/notifications
   S.keymap = await api.keymap();
@@ -4469,6 +4573,7 @@ function initDetail(): void {
     const collapsed = panel.classList.toggle("collapsed");
     wt.innerHTML = `${collapsed ? "▸" : "▾"} Learning — weights, nudges &amp; nightly dreams <span class="dim">(click to ${collapsed ? "expand" : "collapse"})</span>`;
   });
+  wireCockpitChat(); // Stage 3: the global "Ask ClaudeOS" chat launcher + panel
   wireDiffPaneDelegation(); // FIX AA: delegated clicks for diff-pane buttons (Viewed + Merge)
   applyUiScale(); // FIX CC: restore persisted UI text scale
   // Detached Diff/HTML window: reply to its "hello" with the current selection, expose a manual

@@ -18,7 +18,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { WebSocketServer } from "ws";
 import * as pty from "node-pty";
-import { openDb, purgeDemoArtifacts, upsertDiscoveredSession } from "../core/db";
+import { openDb, purgeDemoArtifacts, upsertDiscoveredSession, logChat, recentChat } from "../core/db";
+import { setPromptLog } from "../core/claude";
 import { SessionSearchService } from "../core/sessionSearch";
 import { loadConfig, loadKeymap } from "../core/config";
 import { SessionManager } from "../core/sessions";
@@ -75,6 +76,16 @@ const engine = new Engine(db, sm, cfg, {
   kanban: DEMO ? false : undefined, // demo seeds fake kanban cards; never scans the real board
 });
 const ctrl = new Controller(db, engine, sm, cfg, DEMO);
+
+// Stage 2: persist every `claude -p` prompt+response to chat_log so the operator can review the
+// full record ("all prompts, stored"). Skip the ultra-high-frequency internal gate labels (they
+// run per-session-per-tick and already live in .run/llm-usage.jsonl) so the log stays a readable
+// conversation record, not machinery spam. The label is stored in `model` as "<label>:<model>".
+const PROMPT_LOG_SKIP = new Set(["state-gate", "eta", "discover", "session-search"]);
+setPromptLog((e) => {
+  if (PROMPT_LOG_SKIP.has(e.label)) return;
+  logChat(db, { scope: "task", role: "system", content: e.response, prompt: e.prompt, model: `${e.label}:${e.model}` });
+});
 
 // SESSION SEARCH: full-history search over every transcript in ~/.claude/projects.
 // Index is mtime-cached in data/. DEMO is fully sandboxed: it scans a throwaway projects
@@ -300,6 +311,16 @@ const server = http.createServer(async (req, res) => {
       const pr = await ctrl.refreshSessionPr(sid);
       return send(res, 200, { pr: pr || null });
     }
+    if (p === "/api/chat-log") {
+      // The conversation record (Stage 2): recent gist beats, logged prompts, and — Stage 3 — the
+      // global assistant thread. Filter by scope/session; newest-first. This is the "look at the
+      // logs and see what happens" view.
+      const scope = url.searchParams.get("scope") as any;
+      const sid = numId(url.searchParams.get("sessionId"));
+      const limit = numId(url.searchParams.get("limit")) ?? 100;
+      const rows = recentChat(db, { scope: scope || undefined, sessionId: sid ?? undefined, limit });
+      return send(res, 200, { rows });
+    }
     if (p.startsWith("/api/gist/")) {
       // The SOUL-voiced chat gist (highlights) for a session; cached on transcript mtime, ?force=1
       // regenerates. Lazy — the tick already computes gists for ready items; this covers on-demand
@@ -396,6 +417,15 @@ const server = http.createServer(async (req, res) => {
         ctrl.setFocus(typeof body.focus === "string" ? body.focus : "");
         await tickLoop();
         return send(res, 200, { ok: true });
+      }
+      if (p === "/api/cockpit-chat") {
+        // Stage 3: the global cockpit chat — talk TO ClaudeOS; it narrates + can drive the queue.
+        const message = typeof body.message === "string" ? body.message.trim() : "";
+        if (!message) return send(res, 400, { error: "missing message" });
+        const history = Array.isArray(body.history) ? body.history : [];
+        const r = await ctrl.cockpitChat(message, history);
+        quickRerank(); // an action (answer/dismiss/complete/focus) reflects in the queue instantly
+        return send(res, 200, r);
       }
       if (p === "/api/account/switch") {
         // Manual account picker: swap ~/.claude.json to the named snapshot.
