@@ -979,6 +979,10 @@ function applyKeyboardTarget() {
   // any keystroke in that gap leaks into the terminal behind — the "every ~Nth letter types into
   // the terminal" flicker, paced by the render tick. Leaving early keeps the overlay input focused.
   if (overlayOpen()) return;
+  // The global "Ask ClaudeOS" chat owns the keyboard while open — a background render tick must not
+  // yank focus back to the terminal (else typed text leaks into the pty behind it). Same rationale
+  // as the overlay guard above.
+  if (typeof _cc !== "undefined" && _cc.open) return;
   const fv = S.panes[S.focused];
   const term = S.term;
   const inp = document.getElementById("answer-input") as HTMLTextAreaElement | null;
