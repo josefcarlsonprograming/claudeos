@@ -690,6 +690,8 @@ function renderGistBeats(host: HTMLElement, it: any) {
   if (!beats.length) maybeFetchGist(it.session.id);
   // The operator's own messages to this session (written to the terminal), newest last.
   html += sent.map((m) => `<div class="gist-beat gist-you">${esc(m.text)}</div>`).join("");
+  // Working indicator: after you send, show a live "…" until the session's reply lands (or times out).
+  if (_taskWaiting[it.session.id]) html += `<div class="gist-beat gist-working"><span class="cc-dots"><i></i><i></i><i></i></span> the session is working…</div>`;
   host.innerHTML = html;
   host.scrollTop = host.scrollHeight;
 }
@@ -749,6 +751,8 @@ function toggleTermDrawer() {
 // Optimistic record of messages the operator has sent to each session's terminal this session, so
 // they show as chat bubbles immediately (the gist summarizes the session's side).
 const _taskSent: Record<number, { role: string; text: string }[]> = {};
+// Sessions we're waiting on for a reply after a chat send → drives the "working…" indicator.
+const _taskWaiting: Record<number, { baseSig: string; poll: number }> = {};
 
 /** Render the CHAT view — it REPLACES the terminal: a compact recap, the SOUL-voiced summary feed
  *  (gist beats) interleaved with the operator's sent messages, ABC quick-replies, and a chat input
@@ -789,33 +793,60 @@ function renderChatInto(el: HTMLElement, it: any, P: "A" | "B") {
 }
 
 /** Send a per-task chat message: write it into the session's terminal (background), show it as a
- *  bubble, and keep the operator ON this task (a conversation, not answer→advance). */
+ *  bubble, keep the operator ON this task, and show a live "working…" indicator until the session's
+ *  reply lands in the summary (Claude turns take 30–60s, so silence != failure). */
 async function sendChatMessage(it: any, text: string) {
   if (!it) return;
   text = (text || "").trim();
   if (!text) return;
   const sid = it.session.id;
+  const baseSig = JSON.stringify(beatsFor(it)); // remember the summary BEFORE, to detect the reply
   (_taskSent[sid] ||= []).push({ role: "you", text });
   const inp = document.getElementById("answer-input") as HTMLTextAreaElement | null;
   if (inp) inp.value = "";
   render(); // show the bubble immediately
-  try {
-    const r = await api.sessionSay(sid, text);
-    const mode = r && r.mode;
+  let mode = "failed";
+  try { const r = await api.sessionSay(sid, text); mode = (r && r.mode) || "failed"; } catch {}
+  if (mode === "live" || mode === "tmux" || mode === "sent") {
+    setStatus("sent — waiting for the session…");
+    _taskWaiting[sid] = { baseSig, poll: 0 };
+    render();               // show the working indicator
+    pollForReply(sid);      // watch for the reply, then clear the indicator
+  } else {
     setStatus(
-      mode === "live" ? "sent to the live session"
-      : mode === "sent" ? "resuming the session to deliver your message…"
-      : mode === "busy" ? "still working on your last message — try again in a moment"
+      mode === "busy" ? "the session is still working on your last message — one moment"
       : mode === "no-session" ? "no resumable session behind this card"
-      : "couldn't deliver — the session may be blocked (rate limit) or gone"
+      : "couldn't deliver — open the terminal (Ctrl+G t) to check this session"
     );
-  } catch { setStatus("couldn't reach the session"); }
-  // Poll the summary a few times as the (possibly headless-resumed) turn produces its response.
-  for (const ms of [2500, 7000, 15000]) setTimeout(() => {
-    delete _gistCacheR[sid]; _gistFetching.delete(sid);
-    if (api.gist) api.gist(sid, true).then((b: any) => { if (Array.isArray(b) && b.length) { _gistCacheR[sid] = b; render(); } }).catch(() => {});
-    void refresh();
-  }, ms);
+  }
+}
+
+/** Poll for the session's reply after a chat send: refresh state (tick-updated gist) + occasionally
+ *  force a fresh summary; when the beats change from the pre-send snapshot, clear the indicator. */
+function pollForReply(sid: number) {
+  const w = _taskWaiting[sid];
+  if (!w) return;
+  w.poll++;
+  const done = () => { delete _taskWaiting[sid]; render(); };
+  if (w.poll > 22) { done(); setStatus("still working — open the terminal (Ctrl+G t) to watch it live"); return; } // ~90s cap
+  setTimeout(async () => {
+    if (!_taskWaiting[sid]) return;
+    try { await refresh(); } catch {}          // cheap: tick may have regenerated the gist
+    // Force a fresh summary a few times (not every tick — each is a haiku call).
+    if (w.poll % 2 === 0 && api.gist) {
+      try { const b = await api.gist(sid, true); if (Array.isArray(b) && b.length) _gistCacheR[sid] = b; } catch {}
+    }
+    const cur = JSON.stringify(_gistCacheR[sid] || beatsForSid(sid));
+    if (cur !== w.baseSig && cur !== "[]" && cur !== "undefined") { done(); setStatus("the session replied"); return; }
+    pollForReply(sid);
+  }, 4000);
+}
+/** Current beats for a session id (from the live state or the local fetch cache). */
+function beatsForSid(sid: number): any[] {
+  if (_gistCacheR[sid]) return _gistCacheR[sid];
+  const q = (S.state && S.state.queue) || [];
+  const it = q.find((x: any) => x.session_id === sid);
+  return (it && Array.isArray(it.gist)) ? it.gist : [];
 }
 
 /** Master pane render. Detects a task change → resets non-manually-overridden panes to
