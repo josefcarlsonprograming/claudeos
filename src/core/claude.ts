@@ -38,6 +38,16 @@ function logUsage(entry: Record<string, unknown>): void {
   } catch {}
 }
 
+// ---------------------------------------------------------------------------------
+// Prompt log hook (Stage 2): every `claude -p` prompt+response can be persisted so the
+// operator can review "all prompts, stored". claude.ts stays db-agnostic — the server sets
+// this hook at boot to write into the chat_log table. Best-effort; a null hook = no-op.
+// ---------------------------------------------------------------------------------
+export interface PromptLogEntry { label: string; model: string; prompt: string; response: string | null; ms: number }
+let _promptLog: ((e: PromptLogEntry) => void) | null = null;
+export function setPromptLog(fn: ((e: PromptLogEntry) => void) | null): void { _promptLog = fn; }
+function logPrompt(e: PromptLogEntry): void { try { _promptLog && _promptLog(e); } catch {} }
+
 /**
  * Build (once) a neutral working directory + empty MCP config so `claude -p` starts
  * with NO project CLAUDE.md and NO MCP servers connected.
@@ -124,7 +134,9 @@ export async function claudePrompt(prompt: string, opts: ClaudeOpts = {}): Promi
           out: u.output_tokens ?? null,
           cost_usd: j.total_cost_usd ?? null, // API-equivalent price; subscription calls don't bill this
         });
-        resolve(typeof j.result === "string" ? j.result : null);
+        const result = typeof j.result === "string" ? j.result : null;
+        logPrompt({ label: opts.label || "unlabeled", model: opts.model || "default", prompt, response: result, ms: Date.now() - t0 });
+        resolve(result);
       } catch {
         logUsage({ ts: new Date().toISOString(), label: opts.label || "unlabeled", model: opts.model || "default", ms: Date.now() - t0, error: true });
         resolve(null);

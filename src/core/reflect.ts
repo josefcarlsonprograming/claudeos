@@ -58,6 +58,18 @@ export async function evolveAnsweringMd(db: DatabaseSync, gen: Gen): Promise<{ c
   const rows = windowRows(db, EVOLVE_WINDOW_DAYS).filter((r) => r.outcome !== "empty");
   if (!rows.length) return { changed: false, text: readAnswering() };
   const cur = readAnswering();
+  // Stage 2: the actual drafting prompts are now logged (chat_log, model 'enrich:*'). Feed a couple
+  // in so reflection can critique HOW the ABC was asked, not just the resulting rules.
+  let draftPrompts = "";
+  try {
+    const { recentChat } = require("./db");
+    const logged = recentChat(db, { scope: "task", roles: ["system"], limit: 40 })
+      .filter((r: any) => (r.model || "").startsWith("enrich:") && r.prompt)
+      .slice(0, 2)
+      .map((r: any, i: number) => `Drafting prompt ${i + 1} (excerpt):\n"""${String(r.prompt).slice(0, 700)}"""`)
+      .join("\n\n");
+    if (logged) draftPrompts = `\n\nHow the cockpit currently DRAFTS these options (for critique — tighten the rules if a pattern in the answers below isn't reflected here):\n${logged}`;
+  } catch { /* logging is best-effort; reflection still runs without it */ }
   const examples = rows
     .slice(0, 40)
     .map((r) => {
@@ -76,7 +88,7 @@ ${cur}
 """
 
 Today's revealed answers (what the cockpit suggested vs what the operator actually sent):
-${examples}
+${examples}${draftPrompts}
 
 EVOLVE the file: keep it concise (<= ~12 bullet rules). Capture durable patterns — e.g. "for SIMPLE_QUESTION yes/no he answers in one short line and says yes unless there's risk", "he strips hedging and pleasantries from option A", "for REVIEW_DIFF he asks for the risk, not a summary", "prefers Swedish warmth for Swedish threads". PRESERVE good existing rules — do NOT rewrite wholesale or invent rules the examples don't support. Output the FULL updated markdown file and nothing else.`;
   const out = await gen(prompt);
