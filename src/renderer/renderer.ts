@@ -801,14 +801,21 @@ async function sendChatMessage(it: any, text: string) {
   render(); // show the bubble immediately
   try {
     const r = await api.sessionSay(sid, text);
-    setStatus(r && r.live ? "sent to the session" : "session isn't live — open the terminal (Ctrl+G t) to resume it");
+    const mode = r && r.mode;
+    setStatus(
+      mode === "live" ? "sent to the live session"
+      : mode === "sent" ? "resuming the session to deliver your message…"
+      : mode === "busy" ? "still working on your last message — try again in a moment"
+      : mode === "no-session" ? "no resumable session behind this card"
+      : "couldn't deliver — the session may be blocked (rate limit) or gone"
+    );
   } catch { setStatus("couldn't reach the session"); }
-  // Give the session a moment to react, then pull a fresh summary of its response.
-  setTimeout(() => {
+  // Poll the summary a few times as the (possibly headless-resumed) turn produces its response.
+  for (const ms of [2500, 7000, 15000]) setTimeout(() => {
     delete _gistCacheR[sid]; _gistFetching.delete(sid);
     if (api.gist) api.gist(sid, true).then((b: any) => { if (Array.isArray(b) && b.length) { _gistCacheR[sid] = b; render(); } }).catch(() => {});
     void refresh();
-  }, 1800);
+  }, ms);
 }
 
 /** Master pane render. Detects a task change → resets non-manually-overridden panes to

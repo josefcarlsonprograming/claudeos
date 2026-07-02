@@ -569,6 +569,34 @@ export class SessionManager {
     }
   }
 
+  // Sessions with a headless `claude --resume` turn currently in flight (so a second chat message
+  // can't spawn a CONCURRENT resume on the same session-id — that would double-run/corrupt the
+  // shared transcript, exactly the hazard the terminal model warns about).
+  private _resuming = new Set<number>();
+
+  /** Deliver a chat message to an IDLE (non-live) session: resume its EXACT conversation headlessly
+   *  (`claude --resume <id> -p "<text>"`) in the session's worktree, fire-and-forget. The resumed
+   *  turn appends to the SAME transcript, so the next tick's gist summarizes the response — the chat
+   *  drives the session even when it has no live tmux pane. Guarded against concurrent resumes.
+   *  Returns "sent" | "busy" | "no-session" | "failed". NEVER call for a LIVE session (use sendInput). */
+  resumeAndSend(session: SessionRow, text: string): "sent" | "busy" | "no-session" | "failed" {
+    if (this.demo) { this.demoAppend(session, text + "\n  ▸ (demo) resumed + message delivered\n> "); return "sent"; }
+    const id = session.claude_session_id;
+    if (!id) return "no-session";
+    if (this._resuming.has(session.id)) return "busy";
+    const cwd = session.worktree_path && fs.existsSync(session.worktree_path) ? session.worktree_path : os.homedir();
+    try {
+      const { spawn } = require("child_process");
+      const child = spawn("claude", ["--resume", id, "-p", text, "--dangerously-skip-permissions"], { cwd, env: envNoTmux(), detached: true, stdio: "ignore" });
+      this._resuming.add(session.id);
+      const clear = () => this._resuming.delete(session.id);
+      child.on("close", clear);
+      child.on("error", clear);
+      child.unref();
+      return "sent";
+    } catch { this._resuming.delete(session.id); return "failed"; }
+  }
+
   /** Live snapshot of the session's tmux pane (the actual terminal screen), or null
    *  if there is no live tmux pane (e.g. a mock/registered session not running). */
   capturePane(session: SessionRow, lines = 200): string | null {

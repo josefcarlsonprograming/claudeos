@@ -1105,13 +1105,11 @@ export class Controller {
    *  session, so it does NOT resolve/advance the queue item — the session goes WORKING then comes
    *  back with its next turn (a fresh gist). If there's a pending question, the message answers it
    *  in-session (and we still log the answer-quality signal for learning, without advancing). */
-  sessionSay(sessionId: number, text: string): { ok: boolean; live: boolean } {
+  sessionSay(sessionId: number, text: string): { ok: boolean; live: boolean; mode: string } {
     const s = this.getSession(sessionId);
-    if (!s || !text || !text.trim()) return { ok: false, live: false };
-    const live = this.sessions.sendInput(s, text);
-    // Log the exchange to chat_log so the operator's chat history persists across reloads.
+    if (!s || !text || !text.trim()) return { ok: false, live: false, mode: "none" };
+    // Log the exchange + record the answer-quality signal (learning) — but keep the card (a chat).
     try { require("./db").logChat(this.db, { scope: "task", role: "user", sessionId, content: text }); } catch {}
-    // If a pending question existed, record the answer-quality signal (learning) but keep the card.
     try {
       const it = this.db.prepare("SELECT * FROM items WHERE session_id=? AND status='pending' ORDER BY id DESC LIMIT 1").get(sessionId) as any;
       if (it) {
@@ -1120,7 +1118,14 @@ export class Controller {
         recordAnswer(this.db, { itemId: it.id, sessionId, category: it.category, state: it.state, question: it.question || "", suggested: it.suggested_answer || "", options, final: text });
       }
     } catch {}
-    return { ok: live, live };
+    // LIVE session (tmux pane) → type into the pane. IDLE session → resume its conversation headlessly
+    // and deliver the message, so the chat drives the session even with no live terminal.
+    if ((s as any).is_live_pane) {
+      const live = this.sessions.sendInput(s, text);
+      return { ok: live, live, mode: live ? "live" : "failed" };
+    }
+    const r = this.sessions.resumeAndSend(s, text);
+    return { ok: r === "sent", live: false, mode: r };
   }
 
   /** GLOBAL cockpit chat (Stage 3): the operator talks TO ClaudeOS, which narrates in his SOUL voice
