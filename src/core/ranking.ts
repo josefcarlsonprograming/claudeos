@@ -11,6 +11,7 @@ import * as path from "path";
 import { execFileSync } from "child_process";
 import { configDir } from "./config";
 import { claudePrompt } from "./claude";
+import { gitEnv } from "./worktree";
 
 export const DEFAULT_RANKING = `# Operator ranking preferences (learned)
 
@@ -83,7 +84,7 @@ EVOLVE the file: keep it concise (<= ~12 bullet rules), refine or append rules t
 
 export type GitRunner = (args: string[], cwd: string) => string;
 const defaultGit: GitRunner = (args, cwd) =>
-  execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: gitEnv() });
 
 /** The repo root for a config-relative pathspec (<repo>/config → <repo>). */
 export function repoRoot(): string {

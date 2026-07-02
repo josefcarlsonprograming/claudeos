@@ -4,10 +4,25 @@
  */
 import { execFileSync } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 
+/** Env whose PATH is augmented with the usual git/tool locations. node-pty and Node's own
+ *  execFileSync resolve the bare command (`git`) against THIS PATH — and macOS GUI/launchd
+ *  processes (the desktop app, systemd --user units) start with a minimal PATH that omits
+ *  Homebrew (/opt/homebrew/bin) and ~/.local/bin. Without this, `execFileSync("git", …)`
+ *  throws `spawnSync git ENOENT` even though git is installed. Mirrors envNoTmux() in
+ *  sessions.ts and the node-pty env in controller.ts. */
+export function gitEnv(): NodeJS.ProcessEnv {
+  const e: NodeJS.ProcessEnv = { ...process.env };
+  const home = os.homedir();
+  const extra = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", `${home}/.local/bin`, `${home}/bin`, "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+  e.PATH = [...extra, ...String(e.PATH || "").split(":")].filter((p, i, a) => p && a.indexOf(p) === i).join(":");
+  return e;
+}
+
 function git(repo: string, args: string[]): string {
-  return execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  return execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: gitEnv() });
 }
 
 /** Canonicalize a path (resolve symlinked prefixes). This matters on macOS, where `os.tmpdir()`
@@ -60,7 +75,7 @@ function resolveBase(repo: string, baseRef?: string): string {
   const name = cfg.replace(/^origin\//, "");
   try {
     execFileSync("git", ["fetch", "origin", name], {
-      cwd: repo, stdio: "ignore", timeout: 5000,
+      cwd: repo, stdio: "ignore", timeout: 5000, env: gitEnv(),
     });
   } catch { /* offline / no remote — stale refs below still work */ }
   const ok = (ref: string) => { try { git(repo, ["rev-parse", "--verify", ref]); return true; } catch { return false; } };
