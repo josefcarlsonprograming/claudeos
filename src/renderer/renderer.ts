@@ -651,11 +651,16 @@ function isDiffable(it: any): boolean {
  *  action sits behind the master key. With the STANDARD LAYOUT pane B always defaults to
  *  Terminal, so a fresh landing always focuses B; the A-branch stays for safety. */
 function defaultFocus(it: any): "A" | "B" {
-  // TERMINAL-FIRST landing is preserved (operator's 2026-06-10 preference): typing goes straight to
-  // the session in pane B. The SOUL-voiced CHAT feed is pane A's front view (what you glance at); the
-  // raw terminal is also a drawer inside it (Ctrl+G t), so "chat in front, terminal behind" holds
-  // without moving the keyboard off the pty.
+  // CHAT-FIRST (operator request 2026-07-02): the chat REPLACES the terminal — landing on a chattable
+  // task focuses the chat input (pane A). What you type is written to the session's terminal in the
+  // background; the raw terminal is the drawer (Ctrl+G t). Non-chat tasks keep terminal-first (B).
+  if (chatEnabled() && paneDefault("A", it) === "chat") return "A";
   return paneDefault("B", it) === "terminal" ? "B" : "A";
+}
+/** Chat REPLACES the terminal: when pane A shows the chat and the operator hasn't manually split,
+ *  pane A fills the working area and pane B (the raw terminal) is hidden — it lives in the drawer. */
+function chatSolo(): boolean {
+  return chatEnabled() && S.panes.A === "chat" && !S.fullPane && !S.paneManual.B;
 }
 
 // ---------- CHAT view: SOUL-voiced gist feed + the collapsible raw-terminal drawer ----------
@@ -678,14 +683,15 @@ function maybeFetchGist(sid: number) {
 function renderGistBeats(host: HTMLElement, it: any) {
   const beats = beatsFor(it);
   host.dataset.beats = String(beats.length);
-  if (!beats.length) {
-    host.innerHTML = `<div class="gist-empty">catching up on the conversation…</div>`;
-    maybeFetchGist(it.session.id);
-    return;
-  }
-  host.innerHTML = beats
-    .map((b) => `<div class="gist-beat" data-kind="${b.kind === "ask" ? "ask" : "beat"}">${esc(b.text || "")}</div>`)
-    .join("");
+  const sent = _taskSent[it.session.id] || [];
+  let html = beats.length
+    ? beats.map((b) => `<div class="gist-beat" data-kind="${b.kind === "ask" ? "ask" : "beat"}">${esc(b.text || "")}</div>`).join("")
+    : `<div class="gist-empty">catching up on the conversation…</div>`;
+  if (!beats.length) maybeFetchGist(it.session.id);
+  // The operator's own messages to this session (written to the terminal), newest last.
+  html += sent.map((m) => `<div class="gist-beat gist-you">${esc(m.text)}</div>`).join("");
+  host.innerHTML = html;
+  host.scrollTop = host.scrollHeight;
 }
 
 // The single, persistent drawer element (like #term-host): created once, re-appended into the chat
@@ -740,15 +746,57 @@ function toggleTermDrawer() {
   if (open) scheduleTermRefit();
 }
 
-/** Render the CHAT view into pane body `el`: the gist beats on top, then the reused Overview card
- *  (recap + ABC options + answer box + actions), then the persistent terminal drawer. */
+// Optimistic record of messages the operator has sent to each session's terminal this session, so
+// they show as chat bubbles immediately (the gist summarizes the session's side).
+const _taskSent: Record<number, { role: string; text: string }[]> = {};
+
+/** Render the CHAT view — it REPLACES the terminal: a compact recap, the SOUL-voiced summary feed
+ *  (gist beats) interleaved with the operator's sent messages, ABC quick-replies, and a chat input
+ *  whose text is written into the session's terminal in the background. Terminal is the drawer. */
 function renderChatInto(el: HTMLElement, it: any, P: "A" | "B") {
-  el.innerHTML = `<div class="chat-scroll"><div class="chat-gist" id="chat-gist" data-beats="0"></div><div class="chat-card"></div></div>`;
+  const recap = (it.context && it.context.trim()) || it.one_liner || "";
+  const opts = isAnswerable(it) ? optionsFor(it) : [];
+  const chips = opts.length
+    ? `<div class="chat-chips">` + opts.map((o, i) => `<button class="chat-chip" data-opt="${i}" title="${esc(o.text)}">${esc(o.text.length > 90 ? o.text.slice(0, 88) + "…" : o.text)}</button>`).join("") + `</div>`
+    : "";
+  el.innerHTML =
+    `<div class="chat-scroll">` +
+    (recap ? `<div class="chat-recap">${esc(recap)}</div>` : "") +
+    `<div class="chat-gist" id="chat-gist" data-beats="0"></div>` +
+    `</div>` +
+    chips +
+    `<div class="answer-row"><textarea id="answer-input" class="answer-input" rows="1" placeholder="message this session — Enter send · Ctrl+Enter newline"></textarea></div>`;
   const gistHost = el.querySelector("#chat-gist") as HTMLElement | null;
   if (gistHost) renderGistBeats(gistHost, it);
-  const cardHost = el.querySelector(".chat-card") as HTMLElement | null;
-  if (cardHost) renderOverviewInto(cardHost, it, P); // reuse recap/ABC/answer box + all handlers verbatim
-  el.appendChild(chatDrawerEl()); // persistent — #term-host mounts into its slot when open
+  // ABC chips send as a chat message (writes to the session; stays on the task).
+  el.querySelectorAll(".chat-chip").forEach((ch) =>
+    ch.addEventListener("click", () => { const i = parseInt((ch as HTMLElement).dataset.opt!, 10); if (opts[i]) void sendChatMessage(it, opts[i].text); }));
+  el.appendChild(chatDrawerEl()); // persistent — #term-host mounts into its slot when the drawer opens
+  const inp = el.querySelector("#answer-input") as HTMLTextAreaElement | null;
+  if (inp && S.focused === P && S.paneItem[P] !== it.id && !drawerTerminalFocused()) inp.focus();
+}
+
+/** Send a per-task chat message: write it into the session's terminal (background), show it as a
+ *  bubble, and keep the operator ON this task (a conversation, not answer→advance). */
+async function sendChatMessage(it: any, text: string) {
+  if (!it) return;
+  text = (text || "").trim();
+  if (!text) return;
+  const sid = it.session.id;
+  (_taskSent[sid] ||= []).push({ role: "you", text });
+  const inp = document.getElementById("answer-input") as HTMLTextAreaElement | null;
+  if (inp) inp.value = "";
+  render(); // show the bubble immediately
+  try {
+    const r = await api.sessionSay(sid, text);
+    setStatus(r && r.live ? "sent to the session" : "session isn't live — open the terminal (Ctrl+G t) to resume it");
+  } catch { setStatus("couldn't reach the session"); }
+  // Give the session a moment to react, then pull a fresh summary of its response.
+  setTimeout(() => {
+    delete _gistCacheR[sid]; _gistFetching.delete(sid);
+    if (api.gist) api.gist(sid, true).then((b: any) => { if (Array.isArray(b) && b.length) { _gistCacheR[sid] = b; render(); } }).catch(() => {});
+    void refresh();
+  }, 1800);
 }
 
 /** Master pane render. Detects a task change → resets non-manually-overridden panes to
@@ -2001,7 +2049,11 @@ function reconcileTerminal() {
   // drawer slot (opening the drawer maximizes A, so pane B's terminal is collapsed → no conflict).
   const drawerSlot = document.getElementById("chat-drawer-slot");
   const chatDrawer = S.panes.A === "chat" && S.termDrawerOpen && chatEnabled() && !!drawerSlot;
-  const target: "A" | "B" | null = chatDrawer ? "A" : S.panes.A === "terminal" ? "A" : S.panes.B === "terminal" ? "B" : null;
+  // In chat-solo (chat replaces the terminal), pane B is hidden — don't attach a terminal there. The
+  // pty exists ONLY while the drawer is open, so a fresh landing costs no hidden WS/pty.
+  const target: "A" | "B" | null = chatDrawer ? "A"
+    : chatSolo() ? null
+    : S.panes.A === "terminal" ? "A" : S.panes.B === "terminal" ? "B" : null;
   if (!target) { if (S.termWs || S.termNative || S.term) teardownTerminal(); host.style.display = "none"; S.termPane = null; return; }
   const it = selectedItem();
   const wantSession = _termOverride != null ? _termOverride : it ? it.session.id : null;
@@ -4109,6 +4161,12 @@ async function sendTyped() {
   const inp = document.getElementById("answer-input") as HTMLInputElement | null;
   if (!it) return;
   const text = (inp?.value || "").trim();
+  // CHAT view: a message written into the session's terminal — a conversation, so it does NOT
+  // advance to the next task. (Non-chat views keep the classic answer→advance behavior.)
+  if (chatEnabled() && S.panes.A === "chat" && S.focused === "A") {
+    if (text) await sendChatMessage(it, text);
+    return;
+  }
   if (!text) {
     // empty + Enter => send the first option if present
     const opts = optionsFor(it);
@@ -4297,6 +4355,13 @@ function applyPaneWidths() {
     main.style.gridTemplateColumns = `${qw}px 6px minmax(0, ${aFr}fr) 0px minmax(0, ${1 - aFr}fr)`;
     paneA.classList.toggle("pane-collapsed", S.termPane !== "A");
     paneB.classList.toggle("pane-collapsed", S.termPane !== "B");
+    return;
+  }
+  if (chatSolo()) {
+    // Chat replaces the terminal: pane A fills, pane B collapses (terminal lives in the chat drawer).
+    main.style.gridTemplateColumns = `${qw}px 6px minmax(0, 1fr) 0px 0fr`;
+    paneA.classList.remove("pane-collapsed");
+    paneB.classList.add("pane-collapsed");
     return;
   }
   paneA.classList.remove("pane-collapsed");

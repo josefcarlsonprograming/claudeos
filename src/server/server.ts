@@ -418,6 +418,15 @@ const server = http.createServer(async (req, res) => {
         await tickLoop();
         return send(res, 200, { ok: true });
       }
+      if (p === "/api/sessionSay") {
+        // Per-task chat: write the operator's message into the session's live terminal (background).
+        const sid = numId(body.sessionId);
+        const text = typeof body.text === "string" ? body.text : "";
+        if (sid == null || !text.trim()) return send(res, 400, { error: "missing sessionId/text" });
+        const r = ctrl.sessionSay(sid, text);
+        quickRerank();
+        return send(res, 200, r);
+      }
       if (p === "/api/cockpit-chat") {
         // Stage 3: the global cockpit chat — talk TO ClaudeOS; it narrates + can drive the queue.
         const message = typeof body.message === "string" ? body.message.trim() : "";

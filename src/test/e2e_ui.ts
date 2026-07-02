@@ -141,26 +141,21 @@ async function run() {
     check("the menu closes after choosing", (await page.locator(".ctx-menu").count()) === 0);
   });
 
-  // ── TERMINAL-FIRST: landing on a task focuses its terminal; ↑/↓ escape it ──
-  await section("Terminal-first: selecting a task focuses the terminal pane (B)", async () => {
-    await selectRow("gzip"); // SIMPLE_QUESTION → pane B defaults to terminal
-    const focusedB = await waitFor(async () =>
-      page.evaluate(() => document.querySelector("#pane-B")?.classList.contains("focused") === true), 5000);
-    check("landing on a plain task focuses pane B", focusedB);
-    const badge = await page.locator("#pane-B-actions").innerText().catch(() => "");
-    check("the focus badge says typing goes to the terminal", /terminal/i.test(badge), badge);
-    // CHAT LAYOUT: a normal Claude task lands Chat (A) | Terminal (B) now — the SOUL-voiced gist is
-    // the front view; the terminal still gets the keyboard (terminal-first) and diff is a manual switch.
-    await selectRow("importer");
-    const reviewLayout = await waitFor(async () =>
+  // ── CHAT-FIRST: the chat REPLACES the terminal; landing focuses the chat input (pane A) ──
+  await section("Chat-first: selecting a task lands on the full-width chat (pane A), terminal hidden", async () => {
+    await selectRow("gzip"); // a normal Claude task → pane A = chat, solo (pane B collapsed)
+    const chatFocused = await waitFor(async () =>
       page.evaluate(() => {
-        const active = (P: string) =>
-          (document.querySelector(`.pane-tabs[data-tabs="${P}"] .tab.active`) as HTMLElement | null)?.dataset.mode;
-        return active("A") === "chat" && active("B") === "terminal";
+        const S = (window as any).cockpitS;
+        const aActive = (document.querySelector('.pane-tabs[data-tabs="A"] .tab.active') as HTMLElement | null)?.dataset.mode;
+        return aActive === "chat" && S.focused === "A";
       }), 5000);
-    const focusedB2 = await waitFor(async () =>
-      page.evaluate(() => document.querySelector("#pane-B")?.classList.contains("focused") === true), 5000);
-    check("a task lands Chat | Terminal and focuses pane B", reviewLayout && focusedB2);
+    check("landing on a Claude task focuses the chat (pane A)", chatFocused);
+    const solo = await waitFor(async () =>
+      page.evaluate(() => document.querySelector("#pane-B")?.classList.contains("pane-collapsed") === true), 5000);
+    check("the chat replaces the terminal — pane B is collapsed (terminal lives in the drawer)", solo);
+    const hasInput = await page.locator("#answer-input").count();
+    check("the chat has a message input", hasInput > 0);
   });
 
   // ── CHAT view: SOUL-voiced gist feed + collapsible terminal drawer ──────────

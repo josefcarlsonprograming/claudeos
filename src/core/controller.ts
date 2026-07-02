@@ -1100,6 +1100,29 @@ export class Controller {
     return await refreshGist(input, String(mtimeMs), opts);
   }
 
+  /** PER-TASK chat input → writes the operator's message straight into the session's terminal (the
+   *  live claude session), exactly as if he'd typed it in the pty. This is a CONVERSATION with the
+   *  session, so it does NOT resolve/advance the queue item — the session goes WORKING then comes
+   *  back with its next turn (a fresh gist). If there's a pending question, the message answers it
+   *  in-session (and we still log the answer-quality signal for learning, without advancing). */
+  sessionSay(sessionId: number, text: string): { ok: boolean; live: boolean } {
+    const s = this.getSession(sessionId);
+    if (!s || !text || !text.trim()) return { ok: false, live: false };
+    const live = this.sessions.sendInput(s, text);
+    // Log the exchange to chat_log so the operator's chat history persists across reloads.
+    try { require("./db").logChat(this.db, { scope: "task", role: "user", sessionId, content: text }); } catch {}
+    // If a pending question existed, record the answer-quality signal (learning) but keep the card.
+    try {
+      const it = this.db.prepare("SELECT * FROM items WHERE session_id=? AND status='pending' ORDER BY id DESC LIMIT 1").get(sessionId) as any;
+      if (it) {
+        const { recordAnswer } = require("./answerLog");
+        let options: string[] = []; try { options = JSON.parse(it.answer_options || "[]") || []; } catch {}
+        recordAnswer(this.db, { itemId: it.id, sessionId, category: it.category, state: it.state, question: it.question || "", suggested: it.suggested_answer || "", options, final: text });
+      }
+    } catch {}
+    return { ok: live, live };
+  }
+
   /** GLOBAL cockpit chat (Stage 3): the operator talks TO ClaudeOS, which narrates in his SOUL voice
    *  and can drive the queue (answer / dismiss / complete / focus) via the existing actions. Every
    *  turn is logged to chat_log (scope 'global'). Best-effort; never throws to the caller. */
