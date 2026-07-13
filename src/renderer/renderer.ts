@@ -1125,6 +1125,7 @@ function renderQueue() {
       // sessions the scan tagged (same condition that renders the merge button / Ctrl+G M).
       const pr = s.pr_repo && s.pr_number ? `<span class="badge pr" title="open GitHub PR — M to merge">PR #${s.pr_number}</span>` : "";
       const kan = s.kind === "kanban" ? '<span class="badge kan" title="kanban backfill">KAN</span>' : "";
+      const codex = s.kind === "codex" ? '<span class="badge codex" title="OpenAI Codex session — ' + esc(masterLabel()) + ' V cross-reviews it with Claude">CODEX</span>' : "";
       const team = it._team ? `<span class="badge team" title="Claude Code team — teammates listed below">team ·${(it.children || []).length}</span>` : "";
       const prioCell = it._virtual ? '<span class="p" title="active terminal">●</span>' : it._team ? '<span class="p" title="team — informational">·</span>' : `<span class="p">${dispPriority(it)}</span>`;
       // TEAM-GROUP rows append one display-only child line per teammate (not selectable, no data-i).
@@ -1141,7 +1142,7 @@ function renderQueue() {
       const stateDot = it._team ? "" : `<span class="dot ${s.state} statedot" data-sid="${s.id}" title="status: ${String(s.state || "UNKNOWN").replace("_", " ").toLowerCase()} — click to change"></span> `;
       return `
     <li class="${i === S.sel ? "sel" : ""} ${it._virtual ? "virtual" : ""} ${it._team ? "team" : ""}" data-i="${i}" data-sid="${s.id}">
-      <div class="row1"><span class="t">${i + 1}. ${stateDot}${pin}${pr}${kan}${team}${man}${snz} <span class="qt" data-sid="${s.id}">${esc(sessionHeadline(s, 44))}</span>${renameBtn}${tagChips(s)}</span>${prioCell}</div>
+      <div class="row1"><span class="t">${i + 1}. ${stateDot}${pin}${pr}${kan}${codex}${team}${man}${snz} <span class="qt" data-sid="${s.id}">${esc(sessionHeadline(s, 44))}</span>${renameBtn}${tagChips(s)}</span>${prioCell}</div>
       <div class="c">${esc(it.category || "")} · ${esc(it.one_liner || "")}</div>${kids}
     </li>`;
     }
@@ -1598,7 +1599,7 @@ function renderSessions() {
         const lbl = etaMin > 0 ? `~${timeLeft(r.eta_at)} left` : "ETA reached — re-checking";
         etaBar = `<span class="sess-etabar ${due ? "due" : "run"}" title="${lbl}" aria-label="${lbl}"><i style="width:${pct}%"></i></span>`;
       }
-      return `<li class="sessrow ${s.surfaced ? "surfaced" : ""} ${live ? "" : "roster-only"}" data-sid="${r.id}" data-live="${live ? 1 : 0}" data-title="${esc(r.title)}" title="${live ? "open live terminal" : "recent session (no live pane)"}"><span class="dot ${r.state} statedot" data-sid="${r.id}" title="status: ${String(r.state || "UNKNOWN").replace("_", " ").toLowerCase()} — click to change"></span><span class="sess-title">${title}${tag}</span><span class="rename-btn" data-sid="${r.id}" title="rename">✎</span>${tagChips(r)}${r.pr_repo && r.pr_number ? `<span class="badge pr" title="open GitHub PR #${r.pr_number}">PR</span>` : ""}${runTag}${etaBar}${agoTag}<span class="watch-eye">${live ? "👁" : ""}</span></li>`;
+      return `<li class="sessrow ${s.surfaced ? "surfaced" : ""} ${live ? "" : "roster-only"}" data-sid="${r.id}" data-live="${live ? 1 : 0}" data-title="${esc(r.title)}" title="${live ? "open live terminal" : "recent session (no live pane)"}"><span class="dot ${r.state} statedot" data-sid="${r.id}" title="status: ${String(r.state || "UNKNOWN").replace("_", " ").toLowerCase()} — click to change"></span><span class="sess-title">${title}${tag}</span><span class="rename-btn" data-sid="${r.id}" title="rename">✎</span>${tagChips(r)}${r.pr_repo && r.pr_number ? `<span class="badge pr" title="open GitHub PR #${r.pr_number}">PR</span>` : ""}${r.kind === "codex" ? '<span class="badge codex" title="OpenAI Codex session">CODEX</span>' : ""}${runTag}${etaBar}${agoTag}<span class="watch-eye">${live ? "👁" : ""}</span></li>`;
     })
     .join("");
   // Inline rename via the ✎ (single click on the row still opens the terminal, so the pencil is
@@ -1705,12 +1706,12 @@ function renderWeights() {
 
 // ---------- keyboard loop ----------
 function overlayOpen(): string | null {
-  for (const id of ["help-overlay", "focus-overlay", "edit-overlay", "imp-overlay", "quickprompt-overlay", "merge-overlay", "search-overlay"])
+  for (const id of ["help-overlay", "focus-overlay", "edit-overlay", "imp-overlay", "quickprompt-overlay", "merge-overlay", "search-overlay", "review-overlay"])
     if ($(id).style.display !== "none") return id;
   return null;
 }
 function closeOverlays() {
-  ["help-overlay", "focus-overlay", "edit-overlay", "imp-overlay", "quickprompt-overlay", "merge-overlay", "search-overlay"].forEach(
+  ["help-overlay", "focus-overlay", "edit-overlay", "imp-overlay", "quickprompt-overlay", "merge-overlay", "search-overlay", "review-overlay"].forEach(
     (id) => ($(id).style.display = "none")
   );
   S.rawFor = null;
@@ -1809,6 +1810,41 @@ async function showRaw() {
   setPaneView("B", "terminal");
 }
 
+/** Ctrl+G V — cross-review: ask the OTHER model (Claude↔Codex) to review the selected session's
+ *  diff, then show the review in an overlay. Runs a CLI server-side, so it can take ~1 min. */
+function crossReviewSelected() {
+  const it = selectedItem();
+  const s = it && it.session ? it.session : null;
+  if (!s || !s.id) { setStatus("cross-review: no session selected"); return; }
+  const reviewer = s.kind === "codex" ? "Claude" : "Codex";
+  setStatus(`cross-review: ${reviewer} is reviewing this diff… (can take ~1 min)`);
+  showReview({ pending: true, reviewer: reviewer.toLowerCase() } as any, s);
+  api.crossReview(s.id).then((r: any) => {
+    if (r && r.ok) setStatus(`cross-review by ${r.reviewer} — ${r.changedLines} lines changed`);
+    else setStatus("cross-review: " + ((r && r.error) || "failed"));
+    showReview(r, s);
+  }).catch((e: any) => { setStatus("cross-review error: " + e); showReview({ ok: false, error: String(e) } as any, s); });
+}
+
+function showReview(r: any, s: any) {
+  const head = $("review-head");
+  const body = $("review-body");
+  if (!head || !body) return;
+  const cap = (m: string) => (m ? m.charAt(0).toUpperCase() + m.slice(1) : "?");
+  const title = (s && (s.manual_title || s.clean_title || s.title)) || "session";
+  if (r && r.pending) {
+    head.textContent = `${cap(r.reviewer)} is reviewing — ${title}`;
+    body.innerHTML = `<div class="review-pending">running the review… this asks the other model over its CLI and may take up to a minute.</div>`;
+  } else if (r && r.ok) {
+    head.textContent = `${cap(r.reviewer)} reviewing ${cap(r.author)}'s code — ${title}`;
+    body.innerHTML = `<pre class="review-md">${esc(r.markdown || "")}</pre>`;
+  } else {
+    head.textContent = `Cross-review — ${title}`;
+    body.innerHTML = `<div class="review-err">${esc((r && r.error) || "no response")}</div>`;
+  }
+  $("review-overlay").style.display = "block";
+}
+
 function showHelp() {
   const ml = esc(masterLabel());
   const sel = selectedItem();
@@ -1843,6 +1879,7 @@ function showHelp() {
     ["n", "new session"],
     ["T / A", "take over the selected bg agent / all idle agents"],
     ["M", "merge the selected session's GitHub PR (guarded confirm)"],
+    ["V", "cross-review — the OTHER model (Claude↔Codex) reviews this session's diff"],
     ["X", "merge the selected item's PR (guarded confirm; bare X works while a diff pane is focused)"],
     ["w / g", "feedback: wrong classification / good suggestion"],
     ["O / N", "feedback: too much output / needed more context"],
@@ -1973,6 +2010,8 @@ function runMasterCmd(e: KeyboardEvent): boolean {
   // FIX X: Ctrl+G M = merge the selected session's GitHub PR (confirm first).
   // (lowercase m = maximize, operator request 2026-06-10 — f is now set-focus, like it always was)
   if (e.key === "M") { mergeSelectedPr(); return false; }
+  // Ctrl+G V = CROSS-REVIEW: the OTHER model (Claude↔Codex) reviews the selected session's diff.
+  if (e.key === "V") { crossReviewSelected(); return false; }
   // GATED ACTION KEYS (operator request 2026-06-10): the old DIRECT single-key actions (h/l
   // priority, i importance, p pin, z snooze, …) now live ONLY behind the master — bare keys go
   // to the terminal/answer box. Case-sensitive: capitals dodge the existing view bindings

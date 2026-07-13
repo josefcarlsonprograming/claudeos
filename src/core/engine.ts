@@ -33,6 +33,7 @@ import { enrichItem, enrichFallback } from "./enrich";
 import { scoreItem, focusMatch, effectiveSnoozePenalty, PIN_BASE, ACTIVE_OVER, ScoreResult } from "./priority";
 import { learnedAdjustments, viewPreference } from "./feedback";
 import { discoverRecentSessions, infraTags } from "./discover";
+import { discoverCodexSessions } from "./codexDiscover";
 import { scanPrs } from "./pr";
 import { normalizeOptions } from "./options";
 import { listKanbanCards, classifyKanbanCard, cardDescription, kanbanLaunchPrompt, KanbanCard } from "./kanban";
@@ -69,7 +70,7 @@ export class Engine {
     private db: DatabaseSync,
     private sessions: SessionManager,
     private cfg: FullConfig,
-    private opts: { enrich?: boolean; discover?: boolean; discoverLimit?: number; pr?: boolean; prScanIntervalMs?: number; kanban?: boolean; now?: () => number; heavyPhaseEvery?: number } = { enrich: true }
+    private opts: { enrich?: boolean; discover?: boolean; discoverCodex?: boolean; discoverLimit?: number; pr?: boolean; prScanIntervalMs?: number; kanban?: boolean; now?: () => number; heavyPhaseEvery?: number } = { enrich: true }
   ) {}
 
   /** Current wall-clock in ms. Injectable (`opts.now`) so the kanban cooldown is testable with a fake clock. */
@@ -230,6 +231,11 @@ export class Engine {
     if (this.opts.discover !== false && runHeavy) {
       try {
         await discoverRecentSessions(this.db, this.sessions, this.opts.discoverLimit ?? (Number(process.env.COCKPIT_DISCOVER_LIMIT) || 2000));
+        // Codex CLI sessions (kind='codex') — no-op when ~/.codex/sessions is absent, so a
+        // Claude-only machine pays nothing. Same roster/queue/ranking as Claude sessions.
+        if (this.opts.discoverCodex !== false) {
+          try { await discoverCodexSessions(this.db, Number(process.env.COCKPIT_CODEX_LIMIT) || 20); } catch { /* best-effort */ }
+        }
         // lazy clean titles + category tags (fire-and-forget; never blocks the tick)
         if (this.opts.enrich !== false) {
           const { generateSessionMetaAsync } = require("./discover");

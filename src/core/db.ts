@@ -317,6 +317,20 @@ function migrate(db: DatabaseSync): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Cross-review: Claude and Codex checking each other's code. One row per review run
+    -- (the OPPOSITE model reviews a session's diff). The latest per session is shown in the UI.
+    CREATE TABLE IF NOT EXISTS cross_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL,
+      reviewer TEXT NOT NULL,        -- 'claude' | 'codex' (who reviewed)
+      author TEXT NOT NULL,          -- 'claude' | 'codex' (whose code)
+      base TEXT,                     -- the base ref the diff was taken against
+      changed_lines INTEGER DEFAULT 0,
+      ok INTEGER NOT NULL DEFAULT 0, -- 1 = a real review, 0 = an error/empty (markdown holds the reason)
+      markdown TEXT,                 -- the review (or the error message when ok=0)
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     -- Singleton key/value bag for small engine bookkeeping (e.g. last_auto_launch_at,
     -- the kanban auto-launch cooldown timestamp). One row per key.
     CREATE TABLE IF NOT EXISTS meta (
@@ -405,6 +419,7 @@ function migrate(db: DatabaseSync): void {
   // The log viewer + gist cache read chat_log newest-first, filtered by scope/session; index both.
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_chat_log_scope_created ON chat_log(scope, created_at);"); } catch {}
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_chat_log_session_created ON chat_log(session_id, created_at);"); } catch {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_cross_reviews_session_created ON cross_reviews(session_id, created_at);"); } catch {}
 
   // FIX BB: explicit reasoned-priority feedback columns on training_examples.
   for (const col of ["reason TEXT", "source TEXT", "weight REAL NOT NULL DEFAULT 1"]) {
@@ -512,20 +527,24 @@ export function upsertDiscoveredSession(
   s: { claude_session_id: string; title: string; repo: string; worktree_path: string; branch: string;
        transcript_path: string; pane_id?: string | null; tmux_target?: string | null;
        is_live_pane?: number; pid?: number | null; clean_title?: string | null;
-       is_teammate?: number; team_name?: string | null; agent_name?: string | null }
+       is_teammate?: number; team_name?: string | null; agent_name?: string | null;
+       // 'claude' (default) or 'codex' — a discovered OpenAI Codex CLI session. The column doubles
+       // as the resumable session id for both (claude --resume / codex resume).
+       kind?: string }
 ): number {
+  const kind = s.kind || "claude";
   const existing = db.prepare("SELECT id FROM sessions WHERE claude_session_id = ?").get(s.claude_session_id) as { id: number } | undefined;
   if (existing) {
     db.prepare(
       `UPDATE sessions SET title=?, repo=?, worktree_path=?, branch=?, transcript_path=?,
         pane_id=?, tmux_target=?, is_live_pane=?, pid=COALESCE(?,pid),
         clean_title=COALESCE(?,clean_title), is_teammate=?, team_name=COALESCE(?,team_name),
-        agent_name=COALESCE(?,agent_name), kind='claude', discovered=1, updated_at=datetime('now')
+        agent_name=COALESCE(?,agent_name), kind=?, discovered=1, updated_at=datetime('now')
        WHERE id=?`
     ).run(s.title, s.repo, s.worktree_path, s.branch, s.transcript_path,
           s.pane_id ?? null, s.tmux_target ?? null, s.is_live_pane ?? 0, s.pid ?? null,
           s.clean_title ?? null, s.is_teammate ?? 0, s.team_name ?? null, s.agent_name ?? null,
-          existing.id);
+          kind, existing.id);
     return existing.id;
   }
   // ADOPT a cockpit-LAUNCHED session instead of inserting a duplicate. A Ctrl+G-i / new-Claude
@@ -538,11 +557,11 @@ export function upsertDiscoveredSession(
   // unambiguously the SAME session — stamp it with the uuid + live transcript/pane rather than dup
   // it. Guarded so it can never fold together two genuinely-distinct sessions that share a repo cwd
   // (those are discovered=1 with their own uuids; none is an un-stamped launch row).
-  const adopt = db.prepare(
+  const adopt = kind === "claude" ? db.prepare(
     `SELECT id FROM sessions
        WHERE worktree_path = ? AND claude_session_id IS NULL AND discovered = 0 AND kind = 'claude'
        ORDER BY id DESC LIMIT 1`
-  ).get(s.worktree_path) as { id: number } | undefined;
+  ).get(s.worktree_path) as { id: number } | undefined : undefined;
   if (adopt) {
     db.prepare(
       `UPDATE sessions SET claude_session_id=?, title=?, repo=?, branch=?, transcript_path=?,
@@ -557,10 +576,10 @@ export function upsertDiscoveredSession(
   const slot = nextSlot(db);
   const info = db.prepare(
     `INSERT INTO sessions (slot,title,repo,worktree_path,branch,claude_session_id,transcript_path,pane_id,tmux_target,is_live_pane,clean_title,pid,is_teammate,team_name,agent_name,state,kind,discovered)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'UNKNOWN','claude',1)`
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'UNKNOWN',?,1)`
   ).run(slot, s.title, s.repo, s.worktree_path, s.branch, s.claude_session_id, s.transcript_path,
         s.pane_id ?? null, s.tmux_target ?? null, s.is_live_pane ?? 0, s.clean_title ?? null, s.pid ?? null,
-        s.is_teammate ?? 0, s.team_name ?? null, s.agent_name ?? null);
+        s.is_teammate ?? 0, s.team_name ?? null, s.agent_name ?? null, kind);
   return Number(info.lastInsertRowid);
 }
 
@@ -999,6 +1018,39 @@ export function recentChat(
   const limit = Math.max(1, Math.min(500, opts.limit ?? 100));
   const sql = `SELECT * FROM chat_log ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY id DESC LIMIT ?`;
   return db.prepare(sql).all(...args, limit) as unknown as ChatLogRow[];
+}
+
+// ---- cross_reviews: Claude ↔ Codex second-opinion reviews ----
+export interface CrossReviewRow {
+  id: number;
+  session_id: number;
+  reviewer: string;
+  author: string;
+  base: string | null;
+  changed_lines: number;
+  ok: number;
+  markdown: string | null;
+  created_at: string;
+}
+
+/** Persist a cross-review run. Returns the new row id (0 on failure — best-effort). */
+export function insertCrossReview(
+  db: DatabaseSync,
+  r: { sessionId: number; reviewer: string; author: string; base: string; changedLines: number; ok: boolean; markdown: string }
+): number {
+  try {
+    const info = db.prepare(
+      "INSERT INTO cross_reviews (session_id, reviewer, author, base, changed_lines, ok, markdown) VALUES (?,?,?,?,?,?,?)"
+    ).run(r.sessionId, r.reviewer, r.author, r.base || null, r.changedLines || 0, r.ok ? 1 : 0, r.markdown || "");
+    return Number(info.lastInsertRowid);
+  } catch { return 0; }
+}
+
+/** The most recent cross-review for a session, or null. */
+export function latestCrossReview(db: DatabaseSync, sessionId: number): CrossReviewRow | null {
+  try {
+    return (db.prepare("SELECT * FROM cross_reviews WHERE session_id = ? ORDER BY id DESC LIMIT 1").get(sessionId) as unknown as CrossReviewRow) || null;
+  } catch { return null; }
 }
 
 export function pruneClosedPrs(db: DatabaseSync, openKeys: Set<string>, scannedRepos?: string[]): void {

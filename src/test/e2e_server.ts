@@ -78,6 +78,15 @@ async function run(srv: DemoServer) {
   check("POST /api/pin bad sessionId → 400", (await post("/api/pin", { pinned: true })).status === 400);
   check("POST /api/overrideState bad state → 400", (await post("/api/overrideState", { sessionId: firstSid, state: "BOGUS" })).status === 400);
   check("POST /api/overrideState missing sessionId → 400", (await post("/api/overrideState", { state: "WORKING" })).status === 400);
+  // Cross-review (Claude↔Codex). Deterministic checks only: a missing id 400s, and an unknown id
+  // returns a well-formed ok=false result (routing + controller wiring) without spawning any CLI.
+  check("POST /api/crossReview missing sessionId → 400", (await post("/api/crossReview", {})).status === 400);
+  {
+    const r = await post("/api/crossReview", { sessionId: 999999 });
+    const b = await r.json();
+    check("POST /api/crossReview unknown id → 200 ok=false with reviewer/author", r.status === 200 && b.ok === false && !!b.reviewer && !!b.author);
+  }
+  check("POST /api/latestCrossReview unknown id → {review:null}", (await (await post("/api/latestCrossReview", { sessionId: 999999 })).json()).review === null);
   check("unknown route → 404", (await get("/api/does-not-exist")).status === 404);
 
   // ──────────────────────────────────────────────────────────────────────────
