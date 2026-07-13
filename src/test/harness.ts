@@ -42,6 +42,10 @@ import { allAdjustments } from "../core/feedback";
 import { parseEtaMarker, parseDurationMinutes, formatTimeLeft, etaFromJson } from "../core/eta";
 import { deriveMeta, applyTaskWindowMeta, humanizeTaskTag, parsePrUrl, TASK_TAG_TITLED, infraTags } from "../core/discover";
 import { buildIndex, keywordSearch, semanticRank } from "../core/sessionSearch";
+import { codexViewFromRaw, deriveCodexMeta, isCodexTranscriptPath } from "../core/codexTranscript";
+import { discoverCodexSessions, sessionIdFromRolloutName } from "../core/codexDiscover";
+import { reviewerFor, buildReviewPrompt, runCrossReview } from "../core/crossReview";
+import { insertCrossReview, latestCrossReview } from "../core/db";
 
 /** Teammates (Claude Code team sub-agents): detected via the transcript's top-level
  *  teamName/agentName fields, never surfaced as their own cards, and listed as child rows under
@@ -4821,6 +4825,95 @@ async function main() {
     octrl.overrideState(b.id, "WORKING");
     octrl.overrideState(b.id, null);
     check("override: clearing removes the override", getSession(odb, b.id)!.manual_state == null);
+
+    openDb(process.env.COCKPIT_DB); // restore the shared singleton
+  }
+
+  // ---- CODEX INTEGRATION: parser, discovery, state detection, cross-review ----
+  {
+    const rl = (type: string, payload: any) => JSON.stringify({ timestamp: "2026-07-13T10:00:00Z", type, payload });
+    const msg = (role: string, text: string) => rl("response_item", { type: "message", role, content: [{ type: role === "assistant" ? "output_text" : "input_text", text }] });
+    const meta = (cwd: string, id: string) => rl("session_meta", { id, cwd });
+
+    // 1) Parser maps a Codex rollout into the SAME TranscriptView shape the detector consumes.
+    const waiting = [
+      meta("/tmp/repoX", "codex-uuid-1"),
+      msg("developer", "<environment_context>cwd=/tmp/repoX</environment_context>"),
+      msg("user", "Add a retry to the uploader"),
+      msg("assistant", "Should I use exponential backoff or a fixed delay?"),
+    ].join("\n");
+    const vw = codexViewFromRaw(waiting);
+    eq("codex: parser cwd from session_meta", vw.cwd, "/tmp/repoX");
+    check("codex: injected <environment_context> is NOT the operator prompt", vw.lastUserPrompt?.text === "Add a retry to the uploader");
+    const dW = detectState({ view: vw, processAlive: false, msSinceWrite: Infinity, quietPeriodMs: 8000 });
+    eq("codex: a trailing question detects as WAITING_INPUT", dW.state, "WAITING_INPUT");
+
+    // 2) A completion statement → DONE; a pending tool call while alive → WORKING.
+    const done = codexViewFromRaw([meta("/tmp/repoX", "u2"), msg("user", "run the tests"), msg("assistant", "Done — added the retry and all tests pass.")].join("\n"));
+    eq("codex: a completion turn detects as DONE", detectState({ view: done, processAlive: false, msSinceWrite: Infinity, quietPeriodMs: 8000 }).state, "DONE");
+    const tool = codexViewFromRaw([meta("/tmp/repoX", "u3"), msg("user", "fix it"), rl("response_item", { type: "function_call", name: "shell", call_id: "c1" })].join("\n"));
+    check("codex: a pending function_call turn carries hasToolUse", !!tool.lastAssistant?.hasToolUse);
+    eq("codex: a mid-tool codex turn (process alive) is WORKING", detectState({ view: tool, processAlive: true, msSinceWrite: Infinity, quietPeriodMs: 8000 }).state, "WORKING");
+
+    // 3) deriveCodexMeta pulls id + cwd + a real title (skipping the injected first message).
+    const cm = deriveCodexMeta(waiting, "fallback-id");
+    eq("codex: deriveCodexMeta.sessionId", cm?.sessionId, "codex-uuid-1");
+    eq("codex: deriveCodexMeta.cwd", cm?.cwd, "/tmp/repoX");
+    eq("codex: deriveCodexMeta.title", cm?.title, "Add a retry to the uploader");
+    eq("codex: filename uuid fallback", sessionIdFromRolloutName("/x/rollout-2026-07-13T10-00-00-abcabcab-1234-1234-1234-abcabcabcabc.jsonl"), "abcabcab-1234-1234-1234-abcabcabcabc");
+
+    // 4) Path dispatch: a rollout path is recognized so parseTranscript routes to the codex parser.
+    check("codex: isCodexTranscriptPath matches ~/.codex/sessions", isCodexTranscriptPath("/home/u/.codex/sessions/2026/07/13/rollout-x-uuid.jsonl"));
+    check("codex: isCodexTranscriptPath ignores a claude transcript", !isCodexTranscriptPath("/home/u/.claude/projects/enc/uuid.jsonl"));
+
+    // 5) Discovery: a rollout under CODEX_HOME/sessions upserts a kind='codex' roster session.
+    const codexHome = path.join(HOME, "codexhome");
+    const realCwd = path.join(HOME, "codexrepo"); fs.mkdirSync(realCwd, { recursive: true });
+    const day = path.join(codexHome, "sessions", "2026", "07", "13"); fs.mkdirSync(day, { recursive: true });
+    const rollFile = path.join(day, "rollout-2026-07-13T10-00-00-11111111-2222-3333-4444-555555555555.jsonl");
+    fs.writeFileSync(rollFile, [meta(realCwd, "11111111-2222-3333-4444-555555555555"), msg("user", "Refactor the parser"), msg("assistant", "What is the target module?")].join("\n") + "\n");
+    const prevCodexHome = process.env.CODEX_HOME; process.env.CODEX_HOME = codexHome;
+    const cdb = openDb(path.join(HOME, "codex.db"));
+    const n = await discoverCodexSessions(cdb, 20);
+    check("codex: discovery upserted the rollout", n >= 1);
+    const crow = cdb.prepare("SELECT id, kind, title, transcript_path, worktree_path FROM sessions WHERE kind='codex'").get() as any;
+    check("codex: discovered row is kind='codex'", !!crow && crow.kind === "codex");
+    eq("codex: discovered title", crow?.title, "Refactor the parser");
+    eq("codex: discovered transcript_path is the rollout", crow?.transcript_path, rollFile);
+    if (prevCodexHome == null) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = prevCodexHome;
+
+    // 6) Cross-review: the reviewer is always the OTHER model, and the prompt carries the diff.
+    eq("cross-review: a claude session is reviewed by codex", reviewerFor("claude").reviewer, "codex");
+    eq("cross-review: a codex session is reviewed by claude", reviewerFor("codex").reviewer, "claude");
+    const prompt = buildReviewPrompt("claude", "codex", { patch: "@@ -1 +1 @@\n-old\n+new", base: "main" });
+    check("cross-review: prompt names the reviewer + author", /Codex/.test(prompt) && /Claude/.test(prompt));
+    check("cross-review: prompt embeds the diff", prompt.includes("+new"));
+
+    // Injected deps so no CLI is needed: a claude session must call the CODEX runner.
+    let codexCalled = false, claudeCalled = false;
+    const deps = {
+      claudeRun: async (_p: string) => { claudeCalled = true; return "LGTM — from Claude"; },
+      codexRun: async (_p: string) => { codexCalled = true; return "needs-work — from Codex"; },
+      getDiff: async (_cwd: string, _base: string) => ({ patch: "@@ -1 +1 @@\n-a\n+b", base: "main", changedLines: 2 }),
+    };
+    const r1 = await runCrossReview({ kind: "claude", worktree_path: "/tmp/repoX" }, { deps });
+    check("cross-review: a claude session routed to the codex runner", codexCalled && !claudeCalled);
+    check("cross-review: result ok + reviewer=codex", r1.ok && r1.reviewer === "codex" && /Codex/.test(r1.markdown));
+    codexCalled = claudeCalled = false;
+    const r2 = await runCrossReview({ kind: "codex", worktree_path: "/tmp/repoX" }, { deps });
+    check("cross-review: a codex session routed to the claude runner", claudeCalled && !codexCalled && r2.reviewer === "claude");
+
+    // Empty diff → an actionable error, not a fake review.
+    const rEmpty = await runCrossReview({ kind: "claude", worktree_path: "/tmp/repoX" }, { deps: { ...deps, getDiff: async () => ({ patch: "", base: "main", changedLines: 0 }) } });
+    check("cross-review: empty diff yields ok=false with a reason", !rEmpty.ok && /empty diff/.test(rEmpty.error || ""));
+    // Reviewer CLI unavailable (returns null) → ok=false, surfaced as an error.
+    const rNull = await runCrossReview({ kind: "claude", worktree_path: "/tmp/repoX" }, { deps: { ...deps, codexRun: async () => null } });
+    check("cross-review: a null CLI response yields ok=false", !rNull.ok && !!rNull.error);
+
+    // 7) Persistence round-trips the latest review per session.
+    insertCrossReview(cdb, { sessionId: crow.id, reviewer: "claude", author: "codex", base: "main", changedLines: 2, ok: true, markdown: "second opinion" });
+    const latest = latestCrossReview(cdb, crow.id);
+    check("cross-review: latestCrossReview round-trips", !!latest && latest.ok === 1 && latest.markdown === "second opinion");
 
     openDb(process.env.COCKPIT_DB); // restore the shared singleton
   }

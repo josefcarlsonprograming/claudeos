@@ -8,6 +8,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as crypto from "crypto";
+import { isCodexTranscriptPath } from "./codexTranscript";
 
 export interface Turn {
   role: "user" | "assistant";
@@ -192,7 +193,9 @@ export function pendingToolStall(view: TranscriptView | null): boolean {
 
 export function parseTranscript(filePath: string): TranscriptView {
   // FULL read — only for the raw/pretty transcript display, NOT the hot tick path.
-  return viewFromRaw(fs.readFileSync(filePath, "utf8"));
+  const raw = fs.readFileSync(filePath, "utf8");
+  if (isCodexTranscriptPath(filePath)) return require("./codexTranscript").codexViewFromRaw(raw);
+  return viewFromRaw(raw);
 }
 
 // FIX C: the operator's active transcripts are 14–21 MB. The 5s tick only needs the END (state
@@ -217,7 +220,7 @@ export async function parseTranscriptTail(filePath: string, mtimeMs: number): Pr
       if (start > 0) { const nl = raw.indexOf("\n"); if (nl >= 0) raw = raw.slice(nl + 1); } // drop partial first line
     }
   } finally { await fh.close(); }
-  const view = viewFromRaw(raw);
+  const view = isCodexTranscriptPath(filePath) ? require("./codexTranscript").codexViewFromRaw(raw) : viewFromRaw(raw);
   _tailCache.set(filePath, { mtimeMs, view });
   return view;
 }

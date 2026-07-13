@@ -11,7 +11,8 @@ import { applyFeedback, Feedback, allAdjustments, recentDecisions, AdjustmentRow
 import { recordAnswer } from "./answerLog";
 import { loadConfig, saveFocus, FullConfig, Weights } from "./config";
 import { lastDreams } from "./dream";
-import { ItemRow, SessionRow, SessionState, setPinned, setManualImportance, setManualStateOverride, setSessionState, setManualTitle, setSnoozePenalty, recordExample, getLearnedWeights, recentExamples } from "./db";
+import { ItemRow, SessionRow, SessionState, setPinned, setManualImportance, setManualStateOverride, setSessionState, setManualTitle, setSnoozePenalty, recordExample, getLearnedWeights, recentExamples, insertCrossReview, latestCrossReview, CrossReviewRow } from "./db";
+import { runCrossReview, CrossReviewResult, CrossReviewDeps } from "./crossReview";
 import { effectiveSnoozePenalty } from "./priority";
 import { readRanking } from "./ranking";
 import { prDiff, prStatus, prMerge, prSeedPrompt, localRepoForPr } from "./pr";
@@ -1410,6 +1411,30 @@ export class Controller {
     return this.sessions.ensureAttachSpec(s);
   }
 
+  /** CROSS-REVIEW: have the OTHER model review this session's diff (Claude↔Codex), persist it, and
+   *  return the result. A Claude session's diff is reviewed by Codex; a Codex session's by Claude.
+   *  `deps` is injectable for tests (defaults to the real CLIs + git diff). */
+  async crossReview(sessionId: number, deps?: CrossReviewDeps): Promise<CrossReviewResult & { sessionId: number }> {
+    const s = this.getSession(sessionId) as any;
+    if (!s) return { ok: false, sessionId, reviewer: "codex", author: "claude", markdown: "", base: "", changedLines: 0, error: "unknown session" };
+    const res = await runCrossReview(
+      { kind: s.kind, worktree_path: s.worktree_path },
+      { base: this.cfg.default_base_branch, deps }
+    );
+    try {
+      insertCrossReview(this.db, {
+        sessionId, reviewer: res.reviewer, author: res.author, base: res.base,
+        changedLines: res.changedLines, ok: res.ok, markdown: res.ok ? res.markdown : (res.error || "review failed"),
+      });
+    } catch {}
+    return { ...res, sessionId };
+  }
+
+  /** The latest stored cross-review for a session (for the renderer to re-show without re-running). */
+  latestCrossReview(sessionId: number): CrossReviewRow | null {
+    return latestCrossReview(this.db, sessionId);
+  }
+
   /** P4: spec to spawn a session DIRECTLY (no tmux) via `claude --resume <id>` for a snappy
    *  dedicated terminal. Returns null if this isn't a resumable discovered claude session. */
   directResumeSpec(sessionId: number): { cmd: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv } | null {
@@ -1425,7 +1450,8 @@ export class Controller {
     // materialization as PR cards, so a surfaced card is never the "background agent —
     // read-only / (no transcript found)" dead end.
     if (s.kind === "kanban") return this.materializeKanbanTerminal(s);
-    if (s.kind !== "claude") return null;
+    if (s.kind !== "claude" && s.kind !== "codex") return null;
+    const isCodex = s.kind === "codex";
     const sid = s.claude_session_id;
     const cwd = s.worktree_path;
     if (!sid || !cwd) return null;
@@ -1445,7 +1471,7 @@ export class Controller {
       try { return require("child_process").execFileSync("/usr/bin/env", ["sh", "-c", `command -v ${name}`], { env, encoding: "utf8" }).trim() || name; }
       catch { return name; }
     };
-    const claudeBin = resolveBin("claude");
+    const claudeBin = resolveBin(isCodex ? "codex" : "claude");
     const tmuxBin = resolveBin("tmux");
     // FIX FF: wrap the resume in a fresh per-session tmux so the operator's tmux commands work
     // (Ctrl+B - / | splits, etc.) and the terminal PERSISTS. `-A` = attach-or-create (reopening
@@ -1458,7 +1484,12 @@ export class Controller {
     // reopening re-attaches to it. EXCEPTION: if claude dies in <5s it's almost always a bg-agent
     // resume refusal — let the pane exit fast so attachTerminal()'s onExit fallback can route to the
     // agents view (existing behaviour) instead of trapping the operator in a shell.
-    const resume = `${claudeBin} --resume ${sid} --dangerously-skip-permissions`;
+    // Codex resumes an existing session with `codex resume <id>` (no --dangerously-skip-permissions;
+    // Codex has its own approval flow). Claude uses `claude --resume <id> --dangerously-skip-permissions`.
+    const resume = isCodex
+      ? `${claudeBin} resume ${sid}`
+      : `${claudeBin} --resume ${sid} --dangerously-skip-permissions`;
+    const label = isCodex ? "Codex" : "Claude";
     const inner =
       // SCROLL: tmux defaults to `mouse off`, so the xterm wheel does nothing and the operator
       // can't scroll the terminal. Enable it for this server (global, idempotent) the moment the
@@ -1466,13 +1497,15 @@ export class Controller {
       'tmux set -g mouse on 2>/dev/null; ' +
       '__t0=$(date +%s); ' + resume + '; __rc=$?; __t1=$(date +%s); ' +
       'if [ $((__t1 - __t0)) -lt 5 ]; then exit $__rc; fi; ' +
-      'printf "\\n[Claude session ended — terminal kept alive. Resume with: ' + resume + ']\\n"; ' +
+      'printf "\\n[' + label + ' session ended — terminal kept alive. Resume with: ' + resume + ']\\n"; ' +
       'exec "${SHELL:-bash}" -i';
     const haveTmux = tmuxBin !== "tmux"; // resolveBin returns an absolute path when found, else the bare name
     if (haveTmux) {
       return { cmd: tmuxBin, args: ["new-session", "-A", "-s", `claudeos-${sessionId}`, "-c", cwd, inner], cwd, env };
     }
-    return { cmd: claudeBin, args: ["--resume", sid, "--dangerously-skip-permissions"], cwd, env };
+    return isCodex
+      ? { cmd: claudeBin, args: ["resume", sid], cwd, env }
+      : { cmd: claudeBin, args: ["--resume", sid, "--dangerously-skip-permissions"], cwd, env };
   }
 
   /** PR-TERMINAL: why the last PR-card terminal attach couldn't be materialized (no local clone,

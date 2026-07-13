@@ -364,6 +364,13 @@ body.dragging { cursor: col-resize; user-select: none; }
 .badge.pr { background: #2a1040; color: #c98bff; border: 1px solid #4d2d6b; font-weight: 700; }
 .badge.kan { background: #0d2e1e; color: #6ee7a8; border: 1px solid #1d6b46; font-weight: 700; }
 .badge.team { background: #0d1f2e; color: #59c2ff; border: 1px solid #1d4d6b; font-weight: 700; }
+.badge.codex { background: #1e2a10; color: #b6e26e; border: 1px solid #4d6b1d; font-weight: 700; }
+
+/* cross-review overlay (Ctrl+G V) */
+.review-body { max-height: 70vh; overflow: auto; padding: 4px 2px; }
+.review-md { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.5; color: #d6dbe4; margin: 0; }
+.review-pending { color: #8a93a3; font-style: italic; padding: 10px 4px; }
+.review-err { color: #ff9a9a; padding: 10px 4px; }
 
 /* category tag chips (haiku-assigned, closed vocabulary — color per tag name) */
 .tagchip { display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 5px; border-radius: 999px; margin-left: 3px; vertical-align: middle; background: #1a1d24; color: #8a93a3; border: 1px solid #2a2e38; }

@@ -628,6 +628,18 @@ const server = http.createServer(async (req, res) => {
         if (sid == null) return send(res, 400, { error: "bad sessionId" });
         return send(res, 200, await ctrl.prReviews(sid));
       }
+      // CROSS-REVIEW: the OTHER model (Claude↔Codex) reviews this session's diff. Runs a CLI, so it
+      // can take a while — the renderer shows a "reviewing…" state until it returns.
+      if (p === "/api/crossReview") {
+        const sid = numId(body.sessionId);
+        if (sid == null) return send(res, 400, { error: "bad sessionId" });
+        return send(res, 200, await ctrl.crossReview(sid));
+      }
+      if (p === "/api/latestCrossReview") {
+        const sid = numId(body.sessionId);
+        if (sid == null) return send(res, 400, { error: "bad sessionId" });
+        return send(res, 200, { review: ctrl.latestCrossReview(sid) });
+      }
       if (p === "/api/diffViewed") {
         const sid = numId(body.sessionId);
         if (sid == null) return send(res, 400, { error: "bad sessionId" });

@@ -373,6 +373,18 @@ async function run() {
     }
   });
 
+  await section("Cross-review (Ctrl+G V) opens then closes the review overlay", async () => {
+    await selectRow("scratch");
+    await master("V"); // ask the OTHER model (Claude↔Codex) to review this diff
+    const open = await page.locator("#review-overlay").waitFor({ state: "visible", timeout: 3000 }).then(() => true).catch(() => false);
+    check("Ctrl+G V opens the cross-review overlay", open);
+    if (open) {
+      await page.keyboard.press("Escape");
+      const closed = await page.locator("#review-overlay").waitFor({ state: "hidden", timeout: 3000 }).then(() => true).catch(() => false);
+      check("Esc closes the cross-review overlay", closed);
+    }
+  });
+
   await section("Priority feedback (Ctrl+G H) opens a reason box and records it", async () => {
     const i = await selectRow("importer");
     const item = (await qstate()).queue[i];

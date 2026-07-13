@@ -122,6 +122,8 @@
     worktreeDiff: (sessionId) => jpost("/api/worktreeDiff", { sessionId }),
     diffExpand: (sessionId, path, ctx, oldPath) => jpost("/api/diffExpand", { sessionId, path, ctx, oldPath: oldPath || "" }),
     prReviews: (sessionId) => jpost("/api/prReviews", { sessionId }),
+    crossReview: (sessionId) => jpost("/api/crossReview", { sessionId }),
+    latestCrossReview: (sessionId) => jpost("/api/latestCrossReview", { sessionId }),
     prConversation: (sessionId, force) => jget("/api/prConversation/" + sessionId + (force ? "?force=1" : "")),
     diffViewed: (sessionId) => jpost("/api/diffViewed", { sessionId }).then((r) => r.viewed),
     setDiffViewed: (sessionId, filePath, viewed) => jpost("/api/setDiffViewed", { sessionId, filePath, viewed }),
